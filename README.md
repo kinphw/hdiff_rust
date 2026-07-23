@@ -8,6 +8,8 @@ Windows 네이티브 도구입니다. 원본 파일은 수정하지 않습니다
 - WinForms: 전/후 파일을 첨부 카드에 드래그하면 즉시 읽기 확인을 하고, 파일
   크기·확장자·추출 글자 수·문단 수·사용 파서를 표시
 - 좌·우 문단 정렬 비교, 줄 번호 및 문자 단위 강조 (삭제는 빨강, 추가는 초록)
+- 기본 활성화된 Google Diff Match Patch semantic cleanup: 수정으로 대응된 문단 안의
+  강조 범위를 읽기 좋게 정돈. 체크를 풀면 기존 DiffPlex 문자 강조와 직접 비교 가능
 - 기본값으로 긴 줄 자동 줄바꿈. 두 패널을 최초 정확히 50:50으로 두고 더 좁은 쪽의
   공통 폭으로 줄을 나누어, 좌·우 표시 행 정렬을 유지. 필요하면 체크를 풀어 가로
   스크롤로 전환. 세로 이동은 하나의 공통 스크롤바가 두 원문을 같은 픽셀만큼 이동
@@ -72,10 +74,10 @@ pwsh -File publish.ps1 -SelfContained
 
 ```cmd
 build.cmd
-REM publish\Hdiff-v0.2.5-win-x64-self-contained.zip
+REM publish\Hdiff-v0.2.6-win-x64-self-contained.zip
 
 build.cmd fdd
-REM publish\Hdiff-v0.2.5-win-x64-fdd.zip
+REM publish\Hdiff-v0.2.6-win-x64-fdd.zip
 REM .NET Desktop Runtime이 설치된 PC용의 작은 FDD ZIP
 ```
 

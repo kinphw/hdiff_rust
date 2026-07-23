@@ -70,7 +70,11 @@ public sealed class DocumentDiffer
     private readonly SideBySideDiffBuilder _builder =
         new(new Differ(), LineChunker.Instance, CharacterChunker.Instance);
 
-    public DocumentDiff Compare(ParsedDocument oldDocument, ParsedDocument newDocument, bool ignoreWhitespace = true)
+    public DocumentDiff Compare(
+        ParsedDocument oldDocument,
+        ParsedDocument newDocument,
+        bool ignoreWhitespace = true,
+        bool useGoogleDmpSemanticCleanup = true)
     {
         var oldText = string.Join("\n", oldDocument.ComparisonLines());
         var newText = string.Join("\n", newDocument.ComparisonLines());
@@ -91,22 +95,22 @@ public sealed class DocumentDiffer
 
             if (leftIsReal && rightIsReal && left!.Type == ChangeType.Unchanged && right!.Type == ChangeType.Unchanged)
             {
-                rows.Add(CreateRow(DiffChangeKind.Unchanged, left, right));
+                rows.Add(CreateRow(DiffChangeKind.Unchanged, left, right, useGoogleDmpSemanticCleanup));
                 unchanged++;
             }
             else if (leftIsReal && rightIsReal)
             {
-                rows.Add(CreateRow(DiffChangeKind.Modified, left, right));
+                rows.Add(CreateRow(DiffChangeKind.Modified, left, right, useGoogleDmpSemanticCleanup));
                 modified++;
             }
             else if (leftIsReal)
             {
-                rows.Add(CreateRow(DiffChangeKind.Deleted, left, null));
+                rows.Add(CreateRow(DiffChangeKind.Deleted, left, null, useGoogleDmpSemanticCleanup));
                 deleted++;
             }
             else if (rightIsReal)
             {
-                rows.Add(CreateRow(DiffChangeKind.Inserted, null, right));
+                rows.Add(CreateRow(DiffChangeKind.Inserted, null, right, useGoogleDmpSemanticCleanup));
                 inserted++;
             }
         }
@@ -114,14 +118,33 @@ public sealed class DocumentDiffer
         return new DocumentDiff(oldDocument, newDocument, rows, new DiffSummary(inserted, deleted, modified, unchanged));
     }
 
-    private static DiffRow CreateRow(DiffChangeKind kind, DiffPiece? oldPiece, DiffPiece? newPiece) => new(
-        kind,
-        oldPiece?.Position,
-        oldPiece?.Text,
-        newPiece?.Position,
-        newPiece?.Text,
-        ToFragments(oldPiece, isOldSide: true),
-        ToFragments(newPiece, isOldSide: false));
+    private static DiffRow CreateRow(
+        DiffChangeKind kind,
+        DiffPiece? oldPiece,
+        DiffPiece? newPiece,
+        bool useGoogleDmpSemanticCleanup)
+    {
+        var oldFragments = ToFragments(oldPiece, isOldSide: true);
+        var newFragments = ToFragments(newPiece, isOldSide: false);
+
+        // Keep DiffPlex responsible for pairing document rows. Google DMP runs
+        // only inside a pair that DiffPlex has already classified as modified.
+        if (useGoogleDmpSemanticCleanup && kind == DiffChangeKind.Modified && oldPiece?.Text is { } oldText && newPiece?.Text is { } newText &&
+            GoogleDiffMatchPatchInlineDiffer.TryCreateFragments(oldText, newText, out var refinedOld, out var refinedNew))
+        {
+            oldFragments = refinedOld;
+            newFragments = refinedNew;
+        }
+
+        return new DiffRow(
+            kind,
+            oldPiece?.Position,
+            oldPiece?.Text,
+            newPiece?.Position,
+            newPiece?.Text,
+            oldFragments,
+            newFragments);
+    }
 
     private static IReadOnlyList<InlineDiffFragment> ToFragments(DiffPiece? piece, bool isOldSide)
     {

@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="DiffPlex" Version="1.7.2" />
+    <PackageReference Include="google-diff-match-patch" Version="1.3.100" />
   </ItemGroup>
 </Project>

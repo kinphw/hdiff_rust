@@ -13,6 +13,7 @@ internal sealed class MainForm : Form
     private readonly Button _swapButton = new() { Text = "전/후 바꿈", AutoSize = true };
     private readonly CheckBox _comFallback = new() { Text = "직접 파서 실패 시 한글 COM 폴백", Checked = true, AutoSize = true };
     private readonly CheckBox _ignoreWhitespace = new() { Text = "공백만 다른 변경 무시", Checked = true, AutoSize = true };
+    private readonly CheckBox _googleDmpCleanup = new() { Text = "Google DMP 강조 정돈", Checked = true, AutoSize = true };
     private readonly CheckBox _wrapLongLines = new() { Text = "긴 줄 자동 줄바꿈", Checked = true, AutoSize = true };
     private readonly Label _summary = new() { AutoSize = true, Text = "전/후 HWP 또는 HWPX를 놓고 [비교]를 누르세요." };
     private readonly SideBySideDiffView _diffView = new() { Dock = DockStyle.Fill, WrapLongLines = true };
@@ -33,6 +34,7 @@ internal sealed class MainForm : Form
         if (_applicationIcon is not null) Icon = _applicationIcon;
 
         _toolTip.SetToolTip(_ignoreWhitespace, "띄어쓰기·탭·줄 끝 공백만 다른 경우에는 변경으로 표시하지 않습니다.");
+        _toolTip.SetToolTip(_googleDmpCleanup, "수정으로 짝지어진 문단 내부의 강조 범위를 Google Diff Match Patch semantic cleanup으로 읽기 좋게 정돈합니다.");
         _toolTip.SetToolTip(_wrapLongLines, "VS Code의 Alt+Z처럼 긴 문단을 다음 표시 줄로 이어 보여 줍니다.");
         _oldFile.FileChanged += (_, _) => HandleFileChanged(_oldFile, oldSide: true);
         _newFile.FileChanged += (_, _) => HandleFileChanged(_newFile, oldSide: false);
@@ -48,8 +50,9 @@ internal sealed class MainForm : Form
         _compareButton.Click += async (_, _) => await CompareAsync();
         _swapButton.Click += (_, _) => SwapFiles();
         _wrapLongLines.CheckedChanged += (_, _) => _diffView.WrapLongLines = _wrapLongLines.Checked;
+        _googleDmpCleanup.CheckedChanged += (_, _) => ClearPreviousComparison();
         _comFallback.CheckedChanged += (_, _) => RefreshPreviewsForParserSetting();
-        actions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _wrapLongLines, _ignoreWhitespace, _comFallback });
+        actions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _wrapLongLines, _ignoreWhitespace, _googleDmpCleanup, _comFallback });
 
         var summaryPanel = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(14, 4, 12, 4) };
         summaryPanel.Controls.Add(_summary);
@@ -81,7 +84,7 @@ internal sealed class MainForm : Form
         {
             var oldDoc = await GetDocumentForComparisonAsync(_oldFile, oldSide: true);
             var newDoc = await GetDocumentForComparisonAsync(_newFile, oldSide: false);
-            var diff = new DocumentDiffer().Compare(oldDoc, newDoc, _ignoreWhitespace.Checked);
+            var diff = new DocumentDiffer().Compare(oldDoc, newDoc, _ignoreWhitespace.Checked, _googleDmpCleanup.Checked);
             _oldFile.SetParsedDetails(oldDoc);
             _newFile.SetParsedDetails(newDoc);
             _diffView.SetDiff(diff);

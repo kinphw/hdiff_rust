@@ -41,6 +41,28 @@ Expect(diff.ToGitLog().Contains("평가기간은 7년으로 한다.", StringComp
 var changedRow = diff.Rows.Single(x => x.Kind == DiffChangeKind.Modified);
 Expect(changedRow.OldFragments.Any(x => x is { Kind: InlineDiffFragmentKind.Removed, Text: "5" }), "변경 전 숫자만 문자 단위 삭제로 표시해야 합니다.");
 Expect(changedRow.NewFragments.Any(x => x is { Kind: InlineDiffFragmentKind.Added, Text: "7" }), "변경 후 숫자만 문자 단위 추가로 표시해야 합니다.");
+
+var semanticBefore = new ParsedDocument("semantic-before", new[]
+{
+    new DocumentBlock(DocumentBlockKind.Paragraph, "위원회는 관련 기준을 신속하게 정비한다."),
+}, "test", Array.Empty<string>());
+var semanticAfter = new ParsedDocument("semantic-after", new[]
+{
+    new DocumentBlock(DocumentBlockKind.Paragraph, "위원회는 관련 기준을 체계적으로 정비한다."),
+}, "test", Array.Empty<string>());
+var dmpApplied = GoogleDiffMatchPatchInlineDiffer.TryCreateFragments(
+    semanticBefore.Blocks[0].Text,
+    semanticAfter.Blocks[0].Text,
+    out var dmpOldFragments,
+    out var dmpNewFragments);
+Expect(dmpApplied, "Google DMP semantic cleanup이 성공해야 합니다.");
+Expect(string.Concat(dmpOldFragments.Select(x => x.Text)) == semanticBefore.Blocks[0].Text, "DMP 직접 결과가 변경 전 문단을 정확히 복원해야 합니다.");
+Expect(string.Concat(dmpNewFragments.Select(x => x.Text)) == semanticAfter.Blocks[0].Text, "DMP 직접 결과가 변경 후 문단을 정확히 복원해야 합니다.");
+var semanticRow = new DocumentDiffer().Compare(semanticBefore, semanticAfter).Rows.Single(x => x.Kind == DiffChangeKind.Modified);
+Expect(string.Concat(semanticRow.OldFragments.Select(x => x.Text)) == semanticBefore.Blocks[0].Text, "DMP 정돈 후에도 변경 전 문단이 정확히 복원되어야 합니다.");
+Expect(string.Concat(semanticRow.NewFragments.Select(x => x.Text)) == semanticAfter.Blocks[0].Text, "DMP 정돈 후에도 변경 후 문단이 정확히 복원되어야 합니다.");
+Expect(semanticRow.OldFragments.Any(x => x.Kind == InlineDiffFragmentKind.Removed), "DMP 정돈 결과에 삭제 강조가 있어야 합니다.");
+Expect(semanticRow.NewFragments.Any(x => x.Kind == InlineDiffFragmentKind.Added), "DMP 정돈 결과에 추가 강조가 있어야 합니다.");
 File.WriteAllText(Path.Combine(fixtureDir, "before-after.diff.txt"), diff.ToGitLog(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
 var hwpx = Path.Combine(fixtureDir, "sample.hwpx");
