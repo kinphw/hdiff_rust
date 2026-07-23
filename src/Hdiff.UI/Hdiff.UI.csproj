@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Hdiff</AssemblyName>
+    <ApplicationIcon>..\..\assets\Hdiff.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- dynamic COM fallback must not be trimmed. -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Hdiff.Core\Hdiff.Core.csproj" />
+    <EmbeddedResource Include="..\..\assets\Hdiff.ico" LogicalName="Hdiff.ApplicationIcon" />
+  </ItemGroup>
+</Project>

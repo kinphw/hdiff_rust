@@ -1,0 +1,6 @@
+bin/
+obj/
+artifacts/
+publish/
+rust_diff_engine/target/
+rust_diff_engine/rustup-init.exe

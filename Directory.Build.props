@@ -1,0 +1,20 @@
+<Project>
+  <!-- This workstation has only the .NET 8 SDK. Change this one value to
+       net9.0 when building in the target network. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <DebugType>embedded</DebugType>
+    <NeutralLanguage>ko-KR</NeutralLanguage>
+    <!-- Release version SSOT. The package filename is derived from this value. -->
+    <Version>0.2.5</Version>
+    <FileVersion>$(Version).0</FileVersion>
+    <AssemblyVersion>$(Version).0</AssemblyVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+    <Product>Hdiff</Product>
+  </PropertyGroup>
+</Project>

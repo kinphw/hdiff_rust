@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="DiffPlex" Version="1.7.2" />
+  </ItemGroup>
+</Project>
