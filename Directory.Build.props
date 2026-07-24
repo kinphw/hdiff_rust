@@ -11,7 +11,7 @@
     <DebugType>embedded</DebugType>
     <NeutralLanguage>ko-KR</NeutralLanguage>
     <!-- Release version SSOT. The package filename is derived from this value. -->
-    <Version>0.2.6</Version>
+    <Version>0.2.7</Version>
     <FileVersion>$(Version).0</FileVersion>
     <AssemblyVersion>$(Version).0</AssemblyVersion>
     <InformationalVersion>$(Version)</InformationalVersion>

@@ -2,76 +2,74 @@ using Hdiff.Core.Diff;
 
 namespace Hdiff.UI;
 
-/// <summary>Read-only, line-aligned text comparison view for extracted HWP/HWPX text.</summary>
+/// <summary>
+/// Renders each paired visual row once on a shared canvas.  The old implementation
+/// synchronized two independent RichTextBox scroll positions; that can drift by a
+/// few pixels.  This renderer has one coordinate system and one scrollbar instead.
+/// </summary>
 internal sealed class SideBySideDiffView : UserControl
 {
-    private const int LineNumberColumnWidth = 6;
+    private const int SplitterWidth = 5;
+    private const int OverviewWidth = 42;
+    private const int LineNumberWidth = 48;
 
     private static readonly IReadOnlyList<InlineDiffFragment> EmptyFragments = Array.Empty<InlineDiffFragment>();
-    private readonly DiffPane _oldPane;
-    private readonly DiffPane _newPane;
-    private readonly SplitContainer _split;
+    private readonly Label _oldHeader = CreateHeader("변경 전");
+    private readonly Label _newHeader = CreateHeader("변경 후");
+    private readonly DiffOverviewMap _oldOverview = new(oldSide: true) { Dock = DockStyle.None };
+    private readonly DiffOverviewMap _newOverview = new(oldSide: false) { Dock = DockStyle.None };
     private readonly VScrollBar _verticalScroll = new() { Dock = DockStyle.Right };
     private readonly HScrollBar _horizontalScroll = new() { Dock = DockStyle.Bottom, Visible = false };
-    private readonly List<int> _visualToDiffRow = new();
+    private readonly DiffCanvas _canvas = new() { Dock = DockStyle.Fill };
+    private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = Color.White };
+    private readonly List<VisualDiffRow> _visualRows = new();
     private readonly Dictionary<int, int> _diffRowToFirstVisualLine = new();
+    private DocumentDiff? _lastDiff;
     private bool _wrapLongLines = true;
     private bool _reflowQueued;
-    private bool _initialSplitApplied;
-    private int _lineHeight;
-    private int _contentHeight;
-    private int _oldUnwrappedContentWidth;
-    private int _newUnwrappedContentWidth;
-    private DocumentDiff? _lastDiff;
-
-    private static readonly Color TextBackColor = Color.White;
-    private static readonly Color ImaginaryBackColor = Color.FromArgb(248, 249, 250);
-    private static readonly Color RemovedLineBackColor = Color.FromArgb(255, 242, 242);
-    private static readonly Color RemovedFragmentBackColor = Color.FromArgb(255, 199, 206);
-    private static readonly Color AddedLineBackColor = Color.FromArgb(239, 252, 245);
-    private static readonly Color AddedFragmentBackColor = Color.FromArgb(198, 239, 206);
+    private int _oldTextWidth;
+    private int _newTextWidth;
 
     public SideBySideDiffView()
     {
         BackColor = Color.FromArgb(220, 224, 230);
-        _split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            IsSplitterFixed = false,
-            SplitterWidth = 5,
-        };
 
-        _oldPane = CreatePane("변경 전");
-        _newPane = CreatePane("변경 후", oldSide: false);
-        _oldPane.Overview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
-        _newPane.Overview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
-        _split.Panel1.Controls.Add(_oldPane.Root);
-        _split.Panel2.Controls.Add(_newPane.Root);
-        Controls.Add(_split);
+        var headers = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 32,
+            ColumnCount = 3,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        headers.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SplitterWidth));
+        headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        headers.Controls.Add(_oldHeader, 0, 0);
+        headers.Controls.Add(new Panel { BackColor = BackColor, Dock = DockStyle.Fill }, 1, 0);
+        headers.Controls.Add(_newHeader, 2, 0);
+
+        _oldOverview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
+        _newOverview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
+        _oldOverview.MouseWheel += CanvasMouseWheel;
+        _newOverview.MouseWheel += CanvasMouseWheel;
+        _body.MouseWheel += CanvasMouseWheel;
+        _body.Controls.Add(_canvas);
+        _body.Controls.Add(_oldOverview);
+        _body.Controls.Add(_newOverview);
+
+        _verticalScroll.ValueChanged += (_, _) => UpdateCanvasScroll();
+        _horizontalScroll.ValueChanged += (_, _) => UpdateCanvasScroll();
+        _canvas.MouseWheel += CanvasMouseWheel;
+        _body.Resize += (_, _) => QueueReflow();
+
+        Controls.Add(_body);
         Controls.Add(_horizontalScroll);
         Controls.Add(_verticalScroll);
-
-        _verticalScroll.ValueChanged += (_, _) => ApplyScrollOffsets();
-        _horizontalScroll.ValueChanged += (_, _) => ApplyScrollOffsets();
-        _split.SplitterMoved += (_, _) => QueueReflow();
-        foreach (var box in ContentTextBoxes)
-        {
-            box.MouseWheel += ContentMouseWheel;
-        }
-        ApplyWrappingVisuals();
+        Controls.Add(headers);
     }
 
-    protected override void OnLoad(EventArgs e)
-    {
-        base.OnLoad(e);
-        BeginInvoke((MethodInvoker)delegate
-        {
-            SetInitialSplitEqually();
-            LayoutContentSurfaces();
-        });
-    }
-
-    /// <summary>Like VS Code's word-wrap: wrap long extracted paragraphs while retaining side-by-side row alignment.</summary>
+    /// <summary>Like VS Code's word wrap, but wrapping is calculated once for both sides.</summary>
     public bool WrapLongLines
     {
         get => _wrapLongLines;
@@ -79,29 +77,28 @@ internal sealed class SideBySideDiffView : UserControl
         {
             if (_wrapLongLines == value) return;
             _wrapLongLines = value;
-            ApplyWrappingVisuals();
-            if (_lastDiff is not null) Render(_lastDiff, resetScroll: false);
+            _horizontalScroll.Visible = !value;
+            QueueReflow();
         }
     }
 
     public void Clear()
     {
         _lastDiff = null;
-        _oldPane.Header.Text = "변경 전";
-        _newPane.Header.Text = "변경 후";
-        ClearRenderedText();
+        _oldHeader.Text = "변경 전";
+        _newHeader.Text = "변경 후";
+        _visualRows.Clear();
+        _diffRowToFirstVisualLine.Clear();
+        _oldOverview.SetLines(Array.Empty<DiffOverviewLine>());
+        _newOverview.SetLines(Array.Empty<DiffOverviewLine>());
+        ConfigureScrollBars();
+        _canvas.SetRows(_visualRows);
     }
 
     public void SetDiff(DocumentDiff diff)
     {
         _lastDiff = diff;
         Render(diff, resetScroll: true);
-    }
-
-    protected override void OnSizeChanged(EventArgs e)
-    {
-        base.OnSizeChanged(e);
-        QueueReflow();
     }
 
     private void QueueReflow()
@@ -111,214 +108,117 @@ internal sealed class SideBySideDiffView : UserControl
         BeginInvoke((MethodInvoker)delegate
         {
             _reflowQueued = false;
-            if (IsDisposed || _lastDiff is null) return;
-            if (_wrapLongLines) Render(_lastDiff, resetScroll: false);
-            else LayoutContentSurfaces();
+            if (!IsDisposed && _lastDiff is not null) Render(_lastDiff, resetScroll: false);
         });
-    }
-
-    private void SetInitialSplitEqually()
-    {
-        if (_initialSplitApplied || IsDisposed || _split.ClientSize.Width <= _split.SplitterWidth) return;
-        _split.SplitterDistance = (_split.ClientSize.Width - _split.SplitterWidth) / 2;
-        _initialSplitApplied = true;
     }
 
     private void Render(DocumentDiff diff, bool resetScroll)
     {
-        var preservedDiffRow = resetScroll
-            ? 0
-            : GetDiffRowForVisualLine(_verticalScroll.Value / Math.Max(1, _lineHeight));
-        SuspendLayout();
-        try
+        var preservedDiffRow = resetScroll ? 0 : GetCurrentDiffRow();
+        LayoutBody();
+        _visualRows.Clear();
+        _diffRowToFirstVisualLine.Clear();
+        _oldTextWidth = 0;
+        _newTextWidth = 0;
+
+        _oldHeader.Text = $"변경 전  ·  {Path.GetFileName(diff.OldDocument.SourcePath)}";
+        _newHeader.Text = $"변경 후  ·  {Path.GetFileName(diff.NewDocument.SourcePath)}";
+
+        // The splitter can leave one side a pixel wider when the viewport width is odd.
+        // Using the narrower text width for both sides makes equal text wrap identically.
+        var commonAvailableWidth = Math.Max(24,
+            Math.Min(_canvas.OldContentBounds.Width, _canvas.NewContentBounds.Width) - LineNumberWidth - 8);
+        for (var rowIndex = 0; rowIndex < diff.Rows.Count; rowIndex++)
         {
-            ClearRenderedText();
-            _oldPane.Header.Text = $"변경 전  ·  {Path.GetFileName(diff.OldDocument.SourcePath)}";
-            _newPane.Header.Text = $"변경 후  ·  {Path.GetFileName(diff.NewDocument.SourcePath)}";
-            // A visual row is shared by the two documents.  Always use the narrower
-            // pane's capacity, otherwise identical prose can wrap at different
-            // places simply because its neighbour has a few more pixels.
-            PrepareContentWidths(diff);
-            var sharedColumns = Math.Min(
-                GetWrapColumnCount(_oldPane),
-                GetWrapColumnCount(_newPane));
+            var row = diff.Rows[rowIndex];
+            var oldLines = SplitFragments(row.OldFragments, commonAvailableWidth);
+            var newLines = SplitFragments(row.NewFragments, commonAvailableWidth);
+            var visualLineCount = Math.Max(1, Math.Max(oldLines.Count, newLines.Count));
+            _diffRowToFirstVisualLine[rowIndex] = _visualRows.Count;
 
-            for (var rowIndex = 0; rowIndex < diff.Rows.Count; rowIndex++)
+            for (var lineIndex = 0; lineIndex < visualLineCount; lineIndex++)
             {
-                var row = diff.Rows[rowIndex];
-                var oldLines = CreateVisualLines(row.OldFragments, sharedColumns);
-                var newLines = CreateVisualLines(row.NewFragments, sharedColumns);
-                var visualLineCount = Math.Max(1, Math.Max(oldLines.Count, newLines.Count));
-                _diffRowToFirstVisualLine[rowIndex] = _visualToDiffRow.Count;
+                var oldFragments = lineIndex < oldLines.Count ? oldLines[lineIndex] : EmptyFragments;
+                var newFragments = lineIndex < newLines.Count ? newLines[lineIndex] : EmptyFragments;
+                _visualRows.Add(new VisualDiffRow(
+                    rowIndex,
+                    lineIndex == 0 ? row.OldLine : null,
+                    lineIndex == 0 ? row.NewLine : null,
+                    oldFragments,
+                    newFragments,
+                    row.Kind,
+                    row.OldText is null,
+                    row.NewText is null));
+                _oldTextWidth = Math.Max(_oldTextWidth, MeasureFragments(oldFragments));
+                _newTextWidth = Math.Max(_newTextWidth, MeasureFragments(newFragments));
+            }
+        }
 
-                for (var visualLine = 0; visualLine < visualLineCount; visualLine++)
+        _oldOverview.SetLines(diff.Rows.Select(row => new DiffOverviewLine(row.Kind, row.OldText?.Length ?? 0, row.OldText is null)).ToArray());
+        _newOverview.SetLines(diff.Rows.Select(row => new DiffOverviewLine(row.Kind, row.NewText?.Length ?? 0, row.NewText is null)).ToArray());
+        _canvas.SetRows(_visualRows);
+        ConfigureScrollBars();
+        if (resetScroll) SetVerticalScrollValue(0);
+        else ScrollToDiffRow(preservedDiffRow);
+    }
+
+    private void LayoutBody()
+    {
+        var width = Math.Max(0, _body.ClientSize.Width);
+        var sideWidth = Math.Max(0, (width - SplitterWidth) / 2);
+        var oldContentWidth = Math.Max(0, sideWidth - OverviewWidth);
+        var newContentWidth = Math.Max(0, width - sideWidth - SplitterWidth - OverviewWidth);
+        _canvas.ConfigureColumns(new Rectangle(0, 0, oldContentWidth, _body.ClientSize.Height),
+            new Rectangle(sideWidth + SplitterWidth, 0, newContentWidth, _body.ClientSize.Height));
+        _oldOverview.SetBounds(oldContentWidth, 0, OverviewWidth, _body.ClientSize.Height);
+        _newOverview.SetBounds(width - OverviewWidth, 0, OverviewWidth, _body.ClientSize.Height);
+        _oldOverview.BringToFront();
+        _newOverview.BringToFront();
+    }
+
+    private IReadOnlyList<IReadOnlyList<InlineDiffFragment>> SplitFragments(IReadOnlyList<InlineDiffFragment> fragments, int availableWidth)
+    {
+        if (fragments.Count == 0) return Array.Empty<IReadOnlyList<InlineDiffFragment>>();
+        if (!_wrapLongLines) return new[] { fragments };
+
+        var lines = new List<IReadOnlyList<InlineDiffFragment>>();
+        var current = new List<InlineDiffFragment>();
+        var width = 0;
+        foreach (var fragment in fragments)
+        {
+            foreach (var character in ToDisplayText(fragment.Text))
+            {
+                var characterWidth = MeasureCharacter(character);
+                if (width > 0 && width + characterWidth > availableWidth)
                 {
-                    var oldFragments = visualLine < oldLines.Count ? oldLines[visualLine] : EmptyFragments;
-                    var newFragments = visualLine < newLines.Count ? newLines[visualLine] : EmptyFragments;
-                    WriteContent(
-                        _oldPane.Content,
-                        visualLine == 0 ? row.OldLine : null,
-                        oldFragments,
-                        row.Kind,
-                        oldSide: true,
-                        row.OldText is null);
-                    WriteContent(
-                        _newPane.Content,
-                        visualLine == 0 ? row.NewLine : null,
-                        newFragments,
-                        row.Kind,
-                        oldSide: false,
-                        row.NewText is null);
-                    _visualToDiffRow.Add(rowIndex);
+                    lines.Add(current);
+                    current = new List<InlineDiffFragment>();
+                    width = 0;
                 }
-            }
-
-            _oldPane.Overview.SetLines(diff.Rows.Select(row => new DiffOverviewLine(row.Kind, row.OldText?.Length ?? 0, row.OldText is null)).ToArray());
-            _newPane.Overview.SetLines(diff.Rows.Select(row => new DiffOverviewLine(row.Kind, row.NewText?.Length ?? 0, row.NewText is null)).ToArray());
-            LayoutContentSurfaces();
-            if (resetScroll) ScrollToTop();
-            else ScrollToDiffRow(preservedDiffRow);
-        }
-        finally
-        {
-            ResumeLayout();
-        }
-    }
-
-    private IEnumerable<RichTextBox> AllTextBoxes => new[]
-    {
-        _oldPane.Content, _newPane.Content,
-    };
-
-    private IEnumerable<RichTextBox> ContentTextBoxes => new[] { _oldPane.Content, _newPane.Content };
-
-    private static DiffPane CreatePane(string headerText, bool oldSide = true)
-    {
-        var header = new Label
-        {
-            AutoEllipsis = true,
-            BackColor = Color.FromArgb(245, 247, 250),
-            Dock = DockStyle.Top,
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            Height = 32,
-            Padding = new Padding(10, 7, 10, 4),
-            Text = headerText,
-        };
-
-        var content = CreateTextBox();
-        var contentViewport = new Panel { BackColor = TextBackColor, Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
-        contentViewport.Controls.Add(content);
-        var overview = new DiffOverviewMap(oldSide);
-        var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
-        body.Controls.Add(contentViewport, 0, 0);
-        body.Controls.Add(overview, 1, 0);
-
-        var root = new Panel { BackColor = TextBackColor, Dock = DockStyle.Fill };
-        root.Controls.Add(body);
-        root.Controls.Add(header);
-        return new DiffPane(root, header, contentViewport, content, overview);
-    }
-
-    private static RichTextBox CreateTextBox() => new()
-    {
-        BackColor = TextBackColor,
-        BorderStyle = BorderStyle.None,
-        Cursor = Cursors.IBeam,
-        DetectUrls = false,
-        Dock = DockStyle.Fill,
-        Font = new Font("Consolas", 10.25f),
-        ForeColor = Color.FromArgb(35, 39, 47),
-        HideSelection = false,
-        ReadOnly = true,
-        ScrollBars = RichTextBoxScrollBars.None,
-        ShortcutsEnabled = true,
-        TabStop = true,
-        WordWrap = false,
-    };
-
-    private void ApplyWrappingVisuals()
-    {
-        _horizontalScroll.Visible = !_wrapLongLines;
-    }
-
-    private static void WriteContent(
-        RichTextBox box,
-        int? lineNumber,
-        IReadOnlyList<InlineDiffFragment> fragments,
-        DiffChangeKind rowKind,
-        bool oldSide,
-        bool imaginary)
-    {
-        var lineBackColor = GetLineBackColor(rowKind, oldSide);
-        // The line number and its content must be rendered by the same RichTextBox.
-        // Separate controls have independent internal margins and scroll ranges,
-        // which made numbers drift from wrapped/imaginary comparison rows.
-        var gutter = lineNumber?.ToString().PadLeft(LineNumberColumnWidth) ?? new string(' ', LineNumberColumnWidth);
-        Append(box, gutter, Color.FromArgb(105, 112, 122), lineBackColor);
-        Append(box, " │ ", Color.FromArgb(198, 203, 211), lineBackColor);
-        if (fragments.Count == 0)
-        {
-            // Make the deliberate counterpart of an inserted/deleted row visible.
-            Append(box, imaginary ? "·" : " ", Color.FromArgb(145, 150, 158), imaginary ? ImaginaryBackColor : lineBackColor);
-        }
-        else
-        {
-            foreach (var fragment in fragments)
-            {
-                var (foreColor, backColor) = GetFragmentColors(fragment.Kind, lineBackColor);
-                Append(box, fragment.Text, foreColor, backColor);
+                AppendFragmentCharacter(current, fragment.Kind, character);
+                width += characterWidth;
             }
         }
-        Append(box, Environment.NewLine, Color.FromArgb(35, 39, 47), lineBackColor);
+        if (current.Count > 0) lines.Add(current);
+        return lines;
     }
 
-    private void PrepareContentWidths(DocumentDiff diff)
+    private void ConfigureScrollBars()
     {
-        _oldUnwrappedContentWidth = MeasureUnwrappedContentWidth(diff.Rows, oldSide: true, _oldPane.Content.Font);
-        _newUnwrappedContentWidth = MeasureUnwrappedContentWidth(diff.Rows, oldSide: false, _newPane.Content.Font);
-    }
-
-    private void LayoutContentSurfaces()
-    {
-        var oldViewport = _oldPane.ContentViewport.ClientSize;
-        var newViewport = _newPane.ContentViewport.ClientSize;
-        if (oldViewport.Width <= 0 || newViewport.Width <= 0) return;
-
-        _lineHeight = Math.Max(1, _oldPane.Content.Font.Height);
-        var visibleLineCount = Math.Max(1, _visualToDiffRow.Count);
-        var requiredHeight = (visibleLineCount * _lineHeight) + 6;
-        _contentHeight = Math.Max(requiredHeight, Math.Max(oldViewport.Height, newViewport.Height));
-
-        var oldWidth = _wrapLongLines
-            ? oldViewport.Width
-            : Math.Max(oldViewport.Width, _oldUnwrappedContentWidth);
-        var newWidth = _wrapLongLines
-            ? newViewport.Width
-            : Math.Max(newViewport.Width, _newUnwrappedContentWidth);
-        _oldPane.Content.Size = new Size(oldWidth, _contentHeight);
-        _newPane.Content.Size = new Size(newWidth, _contentHeight);
-
-        ConfigureScrollBars(oldViewport, newViewport, oldWidth, newWidth);
-        ApplyScrollOffsets();
-    }
-
-    private void ConfigureScrollBars(Size oldViewport, Size newViewport, int oldWidth, int newWidth)
-    {
-        var viewportHeight = Math.Max(1, Math.Min(oldViewport.Height, newViewport.Height));
-        ConfigureScrollBar(_verticalScroll, _contentHeight - viewportHeight, viewportHeight, _lineHeight);
+        var contentHeight = _visualRows.Count * _canvas.RowHeight;
+        ConfigureScrollBar(_verticalScroll, contentHeight - _canvas.ClientSize.Height, _canvas.ClientSize.Height, _canvas.RowHeight);
 
         _horizontalScroll.Visible = !_wrapLongLines;
         if (_wrapLongLines)
         {
             _horizontalScroll.Value = 0;
-            return;
         }
-
-        var oldHorizontalRange = Math.Max(0, oldWidth - oldViewport.Width);
-        var newHorizontalRange = Math.Max(0, newWidth - newViewport.Width);
-        ConfigureScrollBar(_horizontalScroll, Math.Max(oldHorizontalRange, newHorizontalRange), Math.Max(oldViewport.Width, newViewport.Width), 24);
+        else
+        {
+            var visibleTextWidth = Math.Max(1, Math.Min(_canvas.OldContentBounds.Width, _canvas.NewContentBounds.Width) - LineNumberWidth - 8);
+            ConfigureScrollBar(_horizontalScroll, Math.Max(_oldTextWidth, _newTextWidth) - visibleTextWidth, visibleTextWidth, 24);
+        }
+        UpdateCanvasScroll();
     }
 
     private static void ConfigureScrollBar(ScrollBar scrollBar, int requestedMaximum, int largeChange, int smallChange)
@@ -332,97 +232,62 @@ internal sealed class SideBySideDiffView : UserControl
         scrollBar.Value = Math.Clamp(scrollBar.Value, 0, maximumValue);
     }
 
-    private void ApplyScrollOffsets()
+    private void UpdateCanvasScroll()
     {
-        var vertical = _verticalScroll.Value;
-        var horizontal = _horizontalScroll.Visible ? _horizontalScroll.Value : 0;
-        PositionContent(_oldPane, horizontal, vertical);
-        PositionContent(_newPane, horizontal, vertical);
+        _canvas.ScrollOffset = _verticalScroll.Value;
+        _canvas.HorizontalOffset = _horizontalScroll.Visible ? _horizontalScroll.Value : 0;
         UpdateOverviewViewports();
+        _canvas.Invalidate();
     }
 
-    private static void PositionContent(DiffPane pane, int requestedHorizontal, int vertical)
-    {
-        var horizontal = Math.Clamp(requestedHorizontal, 0, Math.Max(0, pane.Content.Width - pane.ContentViewport.ClientSize.Width));
-        pane.Content.Location = new Point(-horizontal, -vertical);
-    }
-
-    private void ContentMouseWheel(object? sender, MouseEventArgs e)
+    private void CanvasMouseWheel(object? sender, MouseEventArgs e)
     {
         var scrollLines = SystemInformation.MouseWheelScrollLines;
-        var lineCount = scrollLines == -1 ? Math.Max(1, _verticalScroll.LargeChange / Math.Max(1, _lineHeight)) : Math.Max(1, scrollLines);
+        var lineCount = scrollLines == -1 ? Math.Max(1, _verticalScroll.LargeChange / _canvas.RowHeight) : Math.Max(1, scrollLines);
         var steps = Math.Max(1, Math.Abs(e.Delta) / SystemInformation.MouseWheelScrollDelta);
-        var direction = e.Delta > 0 ? -1 : 1;
-        SetVerticalScrollValue(_verticalScroll.Value + (direction * steps * lineCount * _lineHeight));
+        SetVerticalScrollValue(_verticalScroll.Value + ((e.Delta > 0 ? -1 : 1) * steps * lineCount * _canvas.RowHeight));
+    }
+
+    private void ScrollToDiffRow(int diffRow)
+    {
+        if (!_diffRowToFirstVisualLine.TryGetValue(diffRow, out var visualRow)) return;
+        SetVerticalScrollValue(visualRow * _canvas.RowHeight);
     }
 
     private void SetVerticalScrollValue(int value)
     {
         var maximum = Math.Max(0, _verticalScroll.Maximum - _verticalScroll.LargeChange + 1);
         var clamped = Math.Clamp(value, 0, maximum);
-        if (_verticalScroll.Value == clamped) ApplyScrollOffsets();
+        if (_verticalScroll.Value == clamped) UpdateCanvasScroll();
         else _verticalScroll.Value = clamped;
     }
 
-    private int GetWrapColumnCount(DiffPane pane)
+    private int GetCurrentDiffRow()
     {
-        if (!_wrapLongLines) return int.MaxValue;
-        var box = pane.Content;
-        var availableWidth = pane.ContentViewport.ClientSize.Width - 12;
-        var flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
-        var columnWidth = Math.Max(
-            TextRenderer.MeasureText("가", box.Font, Size.Empty, flags).Width,
-            TextRenderer.MeasureText("W", box.Font, Size.Empty, flags).Width);
-        var gutterWidth = TextRenderer.MeasureText(
-            new string('0', LineNumberColumnWidth) + " │ ",
-            box.Font,
-            Size.Empty,
-            flags).Width;
-        availableWidth -= gutterWidth;
-        if (availableWidth < 120) return 8;
-        return Math.Max(8, availableWidth / Math.Max(1, columnWidth));
+        if (_visualRows.Count == 0) return 0;
+        var visualRow = Math.Clamp(_verticalScroll.Value / _canvas.RowHeight, 0, _visualRows.Count - 1);
+        return _visualRows[visualRow].DiffRowIndex;
     }
 
-    private static int MeasureUnwrappedContentWidth(IEnumerable<DiffRow> rows, bool oldSide, Font font)
+    private void UpdateOverviewViewports()
     {
-        var flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
-        var maximum = 180;
-        foreach (var row in rows)
-        {
-            var lineNumber = oldSide ? row.OldLine : row.NewLine;
-            var text = oldSide ? row.OldText : row.NewText;
-            var gutter = lineNumber?.ToString().PadLeft(LineNumberColumnWidth) ?? new string(' ', LineNumberColumnWidth);
-            var display = gutter + " │ " + ToDisplayText(text ?? string.Empty);
-            maximum = Math.Max(maximum, TextRenderer.MeasureText(display, font, new Size(100_000, 100), flags).Width + 6);
-        }
-        return maximum;
+        if (_visualRows.Count == 0) return;
+        var firstVisualRow = Math.Clamp(_verticalScroll.Value / _canvas.RowHeight, 0, _visualRows.Count - 1);
+        var visibleRows = Math.Max(1, (_canvas.ClientSize.Height / _canvas.RowHeight) + 1);
+        var lastVisualRow = Math.Clamp(firstVisualRow + visibleRows - 1, 0, _visualRows.Count - 1);
+        var firstDiffRow = _visualRows[firstVisualRow].DiffRowIndex;
+        var lastDiffRow = _visualRows[lastVisualRow].DiffRowIndex;
+        var visibleDiffRows = Math.Max(1, lastDiffRow - firstDiffRow + 1);
+        _oldOverview.UpdateViewport(firstDiffRow, visibleDiffRows);
+        _newOverview.UpdateViewport(firstDiffRow, visibleDiffRows);
     }
 
-    private static IReadOnlyList<IReadOnlyList<InlineDiffFragment>> CreateVisualLines(IReadOnlyList<InlineDiffFragment> fragments, int maxColumns)
-    {
-        if (fragments.Count == 0) return Array.Empty<IReadOnlyList<InlineDiffFragment>>();
+    private int MeasureFragments(IReadOnlyList<InlineDiffFragment> fragments) =>
+        fragments.Sum(fragment => TextRenderer.MeasureText(fragment.Text, _canvas.Font, Size.Empty, TextFlags).Width);
 
-        var lines = new List<IReadOnlyList<InlineDiffFragment>>();
-        var current = new List<InlineDiffFragment>();
-        var columns = 0;
-        foreach (var fragment in fragments)
-        {
-            foreach (var character in ToDisplayText(fragment.Text))
-            {
-                var width = character == '\t' ? 4 : 1;
-                if (columns > 0 && columns + width > maxColumns)
-                {
-                    lines.Add(current);
-                    current = new List<InlineDiffFragment>();
-                    columns = 0;
-                }
-                AppendFragmentCharacter(current, fragment.Kind, character);
-                columns += width;
-            }
-        }
-        if (current.Count > 0) lines.Add(current);
-        return lines;
-    }
+    private int MeasureCharacter(char character) => character == '\t'
+        ? MeasureCharacter(' ') * 4
+        : TextRenderer.MeasureText(character.ToString(), _canvas.Font, Size.Empty, TextFlags).Width;
 
     private static void AppendFragmentCharacter(List<InlineDiffFragment> target, InlineDiffFragmentKind kind, char character)
     {
@@ -436,22 +301,14 @@ internal sealed class SideBySideDiffView : UserControl
         }
     }
 
-    private static (Color ForeColor, Color BackColor) GetFragmentColors(InlineDiffFragmentKind kind, Color lineBackColor) => kind switch
+    private static Label CreateHeader(string text) => new()
     {
-        InlineDiffFragmentKind.Removed => (Color.FromArgb(154, 31, 35), RemovedFragmentBackColor),
-        InlineDiffFragmentKind.Added => (Color.FromArgb(0, 104, 50), AddedFragmentBackColor),
-        _ => (Color.FromArgb(35, 39, 47), lineBackColor),
-    };
-
-    private static Color GetLineBackColor(DiffChangeKind kind, bool oldSide) => kind switch
-    {
-        DiffChangeKind.Inserted when oldSide => ImaginaryBackColor,
-        DiffChangeKind.Deleted when !oldSide => ImaginaryBackColor,
-        DiffChangeKind.Deleted when oldSide => RemovedLineBackColor,
-        DiffChangeKind.Inserted when !oldSide => AddedLineBackColor,
-        DiffChangeKind.Modified when oldSide => RemovedLineBackColor,
-        DiffChangeKind.Modified => AddedLineBackColor,
-        _ => TextBackColor,
+        AutoEllipsis = true,
+        BackColor = Color.FromArgb(245, 247, 250),
+        Dock = DockStyle.Fill,
+        Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+        Padding = new Padding(10, 7, 10, 4),
+        Text = text,
     };
 
     private static string ToDisplayText(string text) => text
@@ -459,55 +316,140 @@ internal sealed class SideBySideDiffView : UserControl
         .Replace("\n", "↵", StringComparison.Ordinal)
         .Replace("\r", "↵", StringComparison.Ordinal);
 
-    private static void Append(RichTextBox box, string text, Color foreColor, Color backColor)
-    {
-        box.SelectionStart = box.TextLength;
-        box.SelectionLength = 0;
-        box.SelectionColor = foreColor;
-        box.SelectionBackColor = backColor;
-        box.AppendText(text);
-    }
+    private static readonly TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
-    private void ClearRenderedText()
-    {
-        foreach (var box in AllTextBoxes) box.Clear();
-        _visualToDiffRow.Clear();
-        _diffRowToFirstVisualLine.Clear();
-        _oldPane.Overview.SetLines(Array.Empty<DiffOverviewLine>());
-        _newPane.Overview.SetLines(Array.Empty<DiffOverviewLine>());
-    }
+    private sealed record VisualDiffRow(
+        int DiffRowIndex,
+        int? OldLine,
+        int? NewLine,
+        IReadOnlyList<InlineDiffFragment> OldFragments,
+        IReadOnlyList<InlineDiffFragment> NewFragments,
+        DiffChangeKind Kind,
+        bool OldImaginary,
+        bool NewImaginary);
 
-    private void ScrollToDiffRow(int diffRow)
+    private sealed class DiffCanvas : Control
     {
-        if (!_diffRowToFirstVisualLine.TryGetValue(diffRow, out var visualLine)) return;
-        SetVerticalScrollValue(visualLine * _lineHeight);
-    }
+        private IReadOnlyList<VisualDiffRow> _rows = Array.Empty<VisualDiffRow>();
+        private Rectangle _oldContentBounds;
+        private Rectangle _newContentBounds;
 
-    private void UpdateOverviewViewports()
-    {
-        if (_visualToDiffRow.Count == 0) return;
-        var firstVisualLine = Math.Clamp(_verticalScroll.Value / Math.Max(1, _lineHeight), 0, _visualToDiffRow.Count - 1);
-        var viewportHeight = Math.Max(1, Math.Min(_oldPane.ContentViewport.ClientSize.Height, _newPane.ContentViewport.ClientSize.Height));
-        var visibleVisualLines = Math.Max(1, (viewportHeight / Math.Max(1, _lineHeight)) + 1);
-        var lastVisualLine = Math.Clamp(firstVisualLine + visibleVisualLines - 1, 0, _visualToDiffRow.Count - 1);
-        var firstDiffRow = _visualToDiffRow[firstVisualLine];
-        var lastDiffRow = _visualToDiffRow[lastVisualLine];
-        var visibleDiffRows = Math.Max(1, lastDiffRow - firstDiffRow + 1);
-        _oldPane.Overview.UpdateViewport(firstDiffRow, visibleDiffRows);
-        _newPane.Overview.UpdateViewport(firstDiffRow, visibleDiffRows);
-    }
+        public DiffCanvas()
+        {
+            BackColor = Color.White;
+            Font = new Font("Consolas", 10.25f);
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
+            TabStop = false;
+        }
 
-    private int GetDiffRowForVisualLine(int visualLine)
-    {
-        if (_visualToDiffRow.Count == 0) return 0;
-        return _visualToDiffRow[Math.Clamp(visualLine, 0, _visualToDiffRow.Count - 1)];
-    }
+        public int ScrollOffset { get; set; }
+        public int HorizontalOffset { get; set; }
+        public int RowHeight => Font.Height + 4;
+        public Rectangle OldContentBounds => _oldContentBounds;
+        public Rectangle NewContentBounds => _newContentBounds;
 
-    private void ScrollToTop()
-    {
-        SetVerticalScrollValue(0);
-        _horizontalScroll.Value = 0;
-    }
+        public void SetRows(IReadOnlyList<VisualDiffRow> rows)
+        {
+            _rows = rows;
+            Invalidate();
+        }
 
-    private sealed record DiffPane(Panel Root, Label Header, Panel ContentViewport, RichTextBox Content, DiffOverviewMap Overview);
+        public void ConfigureColumns(Rectangle oldContentBounds, Rectangle newContentBounds)
+        {
+            _oldContentBounds = oldContentBounds;
+            _newContentBounds = newContentBounds;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.Clear(Color.White);
+            if (_rows.Count == 0) return;
+
+            var firstRow = Math.Clamp(ScrollOffset / RowHeight, 0, _rows.Count - 1);
+            var y = -(ScrollOffset % RowHeight);
+            for (var index = firstRow; index < _rows.Count && y < ClientSize.Height; index++, y += RowHeight)
+            {
+                var row = _rows[index];
+                DrawCell(e.Graphics, _oldContentBounds, y, row.OldLine, row.OldFragments, row.Kind, oldSide: true, row.OldImaginary);
+                DrawCell(e.Graphics, _newContentBounds, y, row.NewLine, row.NewFragments, row.Kind, oldSide: false, row.NewImaginary);
+            }
+
+            using var divider = new Pen(Color.FromArgb(220, 224, 230));
+            var dividerX = _oldContentBounds.Right + (SplitterWidth / 2);
+            e.Graphics.DrawLine(divider, dividerX, 0, dividerX, ClientSize.Height);
+        }
+
+        private void DrawCell(
+            Graphics graphics,
+            Rectangle bounds,
+            int y,
+            int? lineNumber,
+            IReadOnlyList<InlineDiffFragment> fragments,
+            DiffChangeKind kind,
+            bool oldSide,
+            bool imaginary)
+        {
+            if (bounds.Width <= 0) return;
+            var lineBounds = new Rectangle(bounds.X, y, bounds.Width, RowHeight);
+            var lineBackColor = GetLineBackColor(kind, oldSide);
+            using var lineBrush = new SolidBrush(lineBackColor);
+            graphics.FillRectangle(lineBrush, lineBounds);
+
+            var gutter = new Rectangle(bounds.X, y, Math.Min(LineNumberWidth, bounds.Width), RowHeight);
+            var lineText = lineNumber?.ToString() ?? string.Empty;
+            TextRenderer.DrawText(graphics, lineText, Font, gutter, Color.FromArgb(105, 112, 122), TextFlags | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            using var gutterPen = new Pen(Color.FromArgb(220, 224, 230));
+            graphics.DrawLine(gutterPen, gutter.Right - 1, y + 2, gutter.Right - 1, y + RowHeight - 3);
+
+            var textBounds = Rectangle.FromLTRB(gutter.Right + 5, y, bounds.Right, y + RowHeight);
+            var saved = graphics.Save();
+            try
+            {
+                graphics.SetClip(textBounds);
+                var x = textBounds.X - HorizontalOffset;
+                if (fragments.Count == 0)
+                {
+                    if (imaginary)
+                    {
+                        TextRenderer.DrawText(graphics, "·", Font, new Point(x, y + 2), Color.FromArgb(145, 150, 158), TextFlags);
+                    }
+                    return;
+                }
+
+                foreach (var fragment in fragments)
+                {
+                    var width = TextRenderer.MeasureText(fragment.Text, Font, Size.Empty, TextFlags).Width;
+                    var (foreColor, backColor) = GetFragmentColors(fragment.Kind, lineBackColor);
+                    using var fragmentBrush = new SolidBrush(backColor);
+                    graphics.FillRectangle(fragmentBrush, x, y, width, RowHeight);
+                    TextRenderer.DrawText(graphics, fragment.Text, Font, new Point(x, y + 2), foreColor, TextFlags);
+                    x += width;
+                }
+            }
+            finally
+            {
+                graphics.Restore(saved);
+            }
+        }
+
+        private static (Color ForeColor, Color BackColor) GetFragmentColors(InlineDiffFragmentKind kind, Color lineBackColor) => kind switch
+        {
+            InlineDiffFragmentKind.Removed => (Color.FromArgb(154, 31, 35), Color.FromArgb(255, 199, 206)),
+            InlineDiffFragmentKind.Added => (Color.FromArgb(0, 104, 50), Color.FromArgb(198, 239, 206)),
+            _ => (Color.FromArgb(35, 39, 47), lineBackColor),
+        };
+
+        private static Color GetLineBackColor(DiffChangeKind kind, bool oldSide) => kind switch
+        {
+            DiffChangeKind.Inserted when oldSide => Color.FromArgb(248, 249, 250),
+            DiffChangeKind.Deleted when !oldSide => Color.FromArgb(248, 249, 250),
+            DiffChangeKind.Deleted when oldSide => Color.FromArgb(255, 242, 242),
+            DiffChangeKind.Inserted when !oldSide => Color.FromArgb(239, 252, 245),
+            DiffChangeKind.Modified when oldSide => Color.FromArgb(255, 242, 242),
+            DiffChangeKind.Modified => Color.FromArgb(239, 252, 245),
+            _ => Color.White,
+        };
+    }
 }
