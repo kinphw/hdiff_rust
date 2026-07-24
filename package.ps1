@@ -1,7 +1,5 @@
 [CmdletBinding()]
-param(
-    [switch]$FrameworkDependent
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -23,7 +21,7 @@ if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]*$') {
     throw "Version contains an unsafe filename character: $version"
 }
 
-$flavor = if ($FrameworkDependent) { 'fdd' } else { 'self-contained' }
+$flavor = 'fdd'
 $packageName = "Hdiff-v$version-win-x64-$flavor"
 $publishDirectory = Join-Path $publishRoot $flavor
 $zipPath = Join-Path $publishRoot "$packageName.zip"
@@ -67,19 +65,14 @@ try {
         Remove-Item -LiteralPath $zipPath -Force
     }
 
-    $selfContained = if ($FrameworkDependent) { 'false' } else { 'true' }
     Write-Host "[Hdiff] Publishing v$version ($flavor)..." -ForegroundColor Cyan
     $publishArguments = @(
         'publish', $project,
         '-c', 'Release',
         '-r', 'win-x64',
-        "-p:SelfContained=$selfContained",
+        '-p:SelfContained=false',
         '-o', $publishDirectory
     )
-    if (-not $FrameworkDependent) {
-        # Single-file bundle compression is supported only by self-contained publishing.
-        $publishArguments += '-p:EnableCompressionInSingleFile=true'
-    }
     & dotnet @publishArguments
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet publish failed with exit code $LASTEXITCODE"

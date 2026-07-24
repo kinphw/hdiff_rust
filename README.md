@@ -68,25 +68,18 @@ dotnet run --project tests/Hdiff.Tests -- --with-com
 `TargetFramework`을 `net9.0`으로, UI 프로젝트의 `net8.0-windows`를
 `net9.0-windows`로 올리면 됩니다.
 
-```powershell
-pwsh -File publish.ps1 -SelfContained
-```
-
-반입용 ZIP은 [build.cmd](/C:/projects/hdiff/build.cmd:1)로 만듭니다. 기본 명령은
-런타임을 함께 넣은 자체 포함(single-file) 패키지이며, 파일명은
+반입용 ZIP은 [build.cmd](/C:/projects/hdiff/build.cmd:1)로 만듭니다. Hdiff의 공식
+배포 형식은 .NET Desktop Runtime을 쓰는 FDD ZIP 하나이며, 파일명은
 `Directory.Build.props`의 `<Version>`에서 생성됩니다.
 
 ```cmd
 build.cmd
-REM publish\Hdiff-v0.2.8-win-x64-self-contained.zip
-
-build.cmd fdd
 REM publish\Hdiff-v0.2.8-win-x64-fdd.zip
 REM .NET Desktop Runtime이 설치된 PC용의 작은 FDD ZIP
 ```
 
-`publish\fdd\` 및 `publish\self-contained\`에는 압축 전 배포 파일이,
-`publish\` 바로 아래에는 반입용 ZIP이 저장됩니다.
+`publish\fdd\`에는 압축 전 배포 파일이, `publish\` 바로 아래에는 반입용 ZIP이
+저장됩니다. `pwsh -File publish.ps1`도 동일한 FDD ZIP을 생성합니다.
 
 배포물의 공식 파일명은 `Hdiff.exe`입니다. 워커는 `Environment.ProcessPath`로
 자기 자신을 다시 실행하므로, 앱과 워커는 항상 같은 실행 파일명으로 동작합니다.
