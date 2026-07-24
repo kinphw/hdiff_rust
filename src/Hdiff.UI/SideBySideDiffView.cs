@@ -366,6 +366,8 @@ internal sealed class SideBySideDiffView : UserControl
 
     private sealed class DiffCanvas : Control
     {
+        private const string DocumentFontFamily = "맑은 고딕";
+        private const int RowVerticalPadding = 7;
         private IReadOnlyList<VisualDiffRow> _rows = Array.Empty<VisualDiffRow>();
         private Rectangle _oldContentBounds;
         private Rectangle _newContentBounds;
@@ -375,7 +377,11 @@ internal sealed class SideBySideDiffView : UserControl
         public DiffCanvas()
         {
             BackColor = Color.White;
-            _documentFont = new Font("Consolas", 10.5f);
+            // HWP reports are predominantly Korean prose. Consolas has no
+            // Korean glyphs, so Windows silently mixed in a fallback font and
+            // made the line rhythm look cramped. Use the standard Korean UI
+            // family consistently instead.
+            _documentFont = CreateDocumentFont(10.5f);
             Font = _documentFont;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
             TabStop = false;
@@ -383,19 +389,22 @@ internal sealed class SideBySideDiffView : UserControl
 
         public int ScrollOffset { get; set; }
         public int HorizontalOffset { get; set; }
-        public int RowHeight => Font.Height + 4;
+        public int RowHeight => Font.Height + RowVerticalPadding;
         public float DocumentFontSizePoints => _documentFont.SizeInPoints;
         public Rectangle OldContentBounds => _oldContentBounds;
         public Rectangle NewContentBounds => _newContentBounds;
 
         public void SetDocumentFontSize(float points)
         {
-            var nextFont = new Font("Consolas", points, FontStyle.Regular, GraphicsUnit.Point);
+            var nextFont = CreateDocumentFont(points);
             var previousFont = _documentFont;
             _documentFont = nextFont;
             Font = nextFont;
             previousFont.Dispose();
         }
+
+        private static Font CreateDocumentFont(float points) =>
+            new(DocumentFontFamily, points, FontStyle.Regular, GraphicsUnit.Point);
 
         public void ApplyTheme(HdiffThemePalette theme)
         {

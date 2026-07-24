@@ -9,6 +9,7 @@ Windows 네이티브 도구입니다. 원본 파일은 수정하지 않습니다
   크기·확장자·추출 글자 수·문단 수·사용 파서를 표시
 - 상단 **글자 크기**: 작게(12px)·보통(14px, 기본)·크게(16px). 선택값은
   `%LocalAppData%\Hdiff\settings.json`에 저장되어 새 배포본으로 바꿔도 유지
+- 비교 본문은 한글 보고서 가독성을 위해 `맑은 고딕`과 넉넉한 행간을 기본 사용
 - 상단 **화면 테마**: 기본 화이트 또는 Rust 스타일의 블랙(네이비) 테마. 첨부 카드,
   비교 행, 인라인 강조, 미니맵까지 함께 전환하며 선택값은 글자 크기와 같이 저장
 - 기본 활성화된 **빈 개행(엔터) 무시**: 내용 없는 문단을 문단 대응과 변경 요약에서
@@ -77,7 +78,7 @@ dotnet run --project tests/Hdiff.Tests -- --with-com
 
 ```cmd
 build.cmd
-REM publish\Hdiff-v0.3.1-win-x64-fdd.zip
+REM publish\Hdiff-v0.3.2-win-x64-fdd.zip
 REM .NET Desktop Runtime이 설치된 PC용의 작은 FDD ZIP
 ```
 
