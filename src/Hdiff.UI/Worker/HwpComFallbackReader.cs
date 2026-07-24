@@ -116,9 +116,10 @@ internal sealed class HwpComFallbackReader
             if (!initScan())
                 throw new DocumentReadException("한글 COM 본문 스캔을 시작하지 못했습니다.");
 
-            // 2 = 일반 텍스트, 3 = 다음 문단. 다른 상태는 문서/리스트의 끝 또는
-            // 제어문자 경계이므로 멈춘다. Guard prevents a malformed document from
-            // keeping a COM worker alive forever.
+            // 2 = 일반 텍스트, 3 = 다음 문단, 4/5 = 제어영역 진입/이탈이다.
+            // 표·필드·섹션 정의가 앞에 있는 실제 보고서는 4/5로 시작할 수 있다.
+            // 여기서 멈추면 본문이 비어 보이므로, 목록 끝(0/1)까지 스캔을 계속한다.
+            // The guard prevents a malformed document from keeping a COM worker alive forever.
             for (var count = 0; count < 1_000_000; count++)
             {
                 var (state, chunk) = getText();
@@ -127,7 +128,18 @@ internal sealed class HwpComFallbackReader
                     builder.Append(chunk);
                     continue;
                 }
-                break;
+
+                if (state is 0 or 1)
+                    break;
+
+                if (state is 101 or 102)
+                    throw new DocumentReadException($"한글 COM 본문 스캔이 상태 코드 {state}로 실패했습니다.");
+
+                // State 4/5 and future non-terminal states. The returned
+                // chunk is normally a control marker, but retain any actual
+                // text and let Clean remove the marker later.
+                if (!string.IsNullOrEmpty(chunk))
+                    builder.Append(chunk);
             }
         }
         finally

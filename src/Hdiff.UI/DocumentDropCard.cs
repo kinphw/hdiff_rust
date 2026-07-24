@@ -124,7 +124,10 @@ internal sealed class DocumentDropCard : UserControl
     public void SetParseFailure(string error)
     {
         if (_filePath is null) return;
-        _details.Text = "읽기 확인 실패 — 비교 시 다시 시도합니다";
+        var firstLine = error.Replace('\r', ' ').Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        _details.Text = string.IsNullOrWhiteSpace(firstLine)
+            ? "읽기 확인 실패 — 비교 시 다시 시도합니다"
+            : $"읽기 실패 — {firstLine}";
         _toolTip.SetToolTip(_details, error);
     }
 
