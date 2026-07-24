@@ -33,16 +33,21 @@ internal static class HdiffUserSettings
     public static void SaveThemeKey(string key)
         => Save(Load() with { Theme = key });
 
+    public static bool LoadShowRowSeparators() => Load().ShowRowSeparators ?? false;
+
+    public static void SaveShowRowSeparators(bool show)
+        => Save(Load() with { ShowRowSeparators = show });
+
     private static Settings Load()
     {
         try
         {
-            if (!File.Exists(SettingsPath)) return new Settings(null, null);
-            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? new Settings(null, null);
+            if (!File.Exists(SettingsPath)) return new Settings(null, null, null);
+            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? new Settings(null, null, null);
         }
         catch
         {
-            return new Settings(null, null);
+            return new Settings(null, null, null);
         }
     }
 
@@ -61,5 +66,5 @@ internal static class HdiffUserSettings
         }
     }
 
-    private sealed record Settings(string? DiffFontSize, string? Theme);
+    private sealed record Settings(string? DiffFontSize, string? Theme, bool? ShowRowSeparators);
 }

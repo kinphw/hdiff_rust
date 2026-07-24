@@ -20,6 +20,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _ignoreBlankLines = new() { Text = "빈 개행(엔터) 무시", Checked = true, AutoSize = true };
     private readonly CheckBox _googleDmpCleanup = new() { Text = "Google DMP 강조 정돈", Checked = true, AutoSize = true };
     private readonly CheckBox _wrapLongLines = new() { Text = "긴 줄 자동 줄바꿈", Checked = true, AutoSize = true };
+    private readonly CheckBox _rowSeparators = new() { Text = "행 경계선", Checked = false, AutoSize = true };
     private readonly Label _summary = new() { AutoSize = true, Text = "전/후 HWP 또는 HWPX를 놓고 [비교]를 누르세요." };
     private readonly SideBySideDiffView _diffView = new() { Dock = DockStyle.Fill, WrapLongLines = true };
     private readonly ToolTip _toolTip = new();
@@ -56,10 +57,12 @@ internal sealed class MainForm : Form
 
         ConfigureFontSizePicker();
         ConfigureThemePicker();
+        ConfigureRowSeparators();
         _toolTip.SetToolTip(_ignoreWhitespace, "띄어쓰기·탭·줄 끝 공백만 다른 경우에는 변경으로 표시하지 않습니다.");
         _toolTip.SetToolTip(_ignoreBlankLines, "내용 없는 문단은 비교 행과 변경 요약에서 제외합니다. 체크를 풀면 원래 빈 문단도 표시합니다.");
         _toolTip.SetToolTip(_googleDmpCleanup, "수정으로 짝지어진 문단 내부의 강조 범위를 Google Diff Match Patch semantic cleanup으로 읽기 좋게 정돈합니다.");
         _toolTip.SetToolTip(_wrapLongLines, "VS Code의 Alt+Z처럼 긴 문단을 다음 표시 줄로 이어 보여 줍니다.");
+        _toolTip.SetToolTip(_rowSeparators, "각 비교 행 아래에 옅은 구분선을 표시합니다. 기본값은 해제입니다.");
         _oldFile.FileChanged += (_, _) => HandleFileChanged(_oldFile, oldSide: true);
         _newFile.FileChanged += (_, _) => HandleFileChanged(_newFile, oldSide: false);
 
@@ -77,7 +80,7 @@ internal sealed class MainForm : Form
         _ignoreBlankLines.CheckedChanged += (_, _) => ClearPreviousComparison();
         _googleDmpCleanup.CheckedChanged += (_, _) => ClearPreviousComparison();
         _comFallback.CheckedChanged += (_, _) => RefreshPreviewsForParserSetting();
-        _actions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _themeLabel, _themePicker, _fontSizeLabel, _fontSize, _wrapLongLines, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback });
+        _actions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _themeLabel, _themePicker, _fontSizeLabel, _fontSize, _wrapLongLines, _rowSeparators, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback });
 
         _summaryPanel = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(14, 4, 12, 4) };
         _summaryPanel.Controls.Add(_summary);
@@ -151,6 +154,17 @@ internal sealed class MainForm : Form
         if (persist) HdiffUserSettings.SaveDiffFontSizeKey(option.Key);
     }
 
+    private void ConfigureRowSeparators()
+    {
+        _rowSeparators.Checked = HdiffUserSettings.LoadShowRowSeparators();
+        _diffView.ShowRowSeparators = _rowSeparators.Checked;
+        _rowSeparators.CheckedChanged += (_, _) =>
+        {
+            _diffView.ShowRowSeparators = _rowSeparators.Checked;
+            HdiffUserSettings.SaveShowRowSeparators(_rowSeparators.Checked);
+        };
+    }
+
     private void ConfigureThemePicker()
     {
         _themePicker.DisplayMember = nameof(DiffThemeOption.Label);
@@ -179,7 +193,7 @@ internal sealed class MainForm : Form
         ApplyPickerTheme(_fontSize, theme);
         ApplyButtonTheme(_compareButton, theme);
         ApplyButtonTheme(_swapButton, theme);
-        foreach (var checkBox in new[] { _wrapLongLines, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback })
+        foreach (var checkBox in new[] { _wrapLongLines, _rowSeparators, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback })
         {
             checkBox.BackColor = theme.AppBack;
             checkBox.ForeColor = theme.Text;

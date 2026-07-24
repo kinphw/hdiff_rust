@@ -79,7 +79,7 @@ dotnet run --project tests/Hdiff.Tests -- --with-com
 
 ```cmd
 build.cmd
-REM publish\Hdiff-v0.3.4-win-x64-fdd.zip
+REM publish\Hdiff-v0.3.5-win-x64-fdd.zip
 REM .NET Desktop Runtime이 설치된 PC용의 작은 FDD ZIP
 ```
 

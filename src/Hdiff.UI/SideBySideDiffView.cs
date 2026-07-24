@@ -85,6 +85,13 @@ internal sealed class SideBySideDiffView : UserControl
         }
     }
 
+    /// <summary>Draw a subtle horizontal boundary after every paired visual row.</summary>
+    public bool ShowRowSeparators
+    {
+        get => _canvas.ShowRowSeparators;
+        set => _canvas.ShowRowSeparators = value;
+    }
+
     /// <summary>
     /// Text size in typographic points. At 96 DPI, 9/10.5/12pt correspond to
     /// the 12/14/16px choices shown in the toolbar.
@@ -373,6 +380,7 @@ internal sealed class SideBySideDiffView : UserControl
         private Rectangle _newContentBounds;
         private Font _documentFont;
         private HdiffThemePalette _theme = HdiffThemes.Light;
+        private bool _showRowSeparators;
 
         public DiffCanvas()
         {
@@ -393,6 +401,16 @@ internal sealed class SideBySideDiffView : UserControl
         public float DocumentFontSizePoints => _documentFont.SizeInPoints;
         public Rectangle OldContentBounds => _oldContentBounds;
         public Rectangle NewContentBounds => _newContentBounds;
+        public bool ShowRowSeparators
+        {
+            get => _showRowSeparators;
+            set
+            {
+                if (_showRowSeparators == value) return;
+                _showRowSeparators = value;
+                Invalidate();
+            }
+        }
 
         public void SetDocumentFontSize(float points)
         {
@@ -445,11 +463,19 @@ internal sealed class SideBySideDiffView : UserControl
                 var row = _rows[index];
                 DrawCell(e.Graphics, _oldContentBounds, y, row.OldLine, row.OldFragments, row.Kind, oldSide: true, row.OldImaginary);
                 DrawCell(e.Graphics, _newContentBounds, y, row.NewLine, row.NewFragments, row.Kind, oldSide: false, row.NewImaginary);
+                if (_showRowSeparators) DrawRowSeparator(e.Graphics, y + RowHeight - 1);
             }
 
             using var divider = new Pen(_theme.Border);
             var dividerX = _oldContentBounds.Right + (SplitterWidth / 2);
             e.Graphics.DrawLine(divider, dividerX, 0, dividerX, ClientSize.Height);
+        }
+
+        private void DrawRowSeparator(Graphics graphics, int y)
+        {
+            if (y < 0 || y >= ClientSize.Height) return;
+            using var separator = new Pen(Color.FromArgb(80, _theme.Border));
+            graphics.DrawLine(separator, 0, y, ClientSize.Width - 1, y);
         }
 
         private void DrawCell(
