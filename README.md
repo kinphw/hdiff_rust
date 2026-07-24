@@ -24,8 +24,8 @@ Windows 네이티브 도구입니다. 원본 파일은 수정하지 않습니다
 - HWP5: OLE Compound File → `FileHeader`/`BodyText/Section*` → 압축 해제 →
   문단 text record 직접 파싱 (한글 불필요)
 - DRM/DLP 안전 경계: 문서 본문은 UI가 아닌 자식 워커가 읽음
-- COM 폴백: 직접 파서가 실패할 때만 한글 COM으로 평문을 읽음. 원본을 변환하거나
-  임시 HWPX를 만들지 않고, 사용자가 열어 둔 Hwp.exe를 찾거나 종료하지 않음.
+- COM 폴백: 직접 파서가 실패할 때만 한글 COM으로 메모리의 평문을 읽음. `Save`/`SaveAs`,
+  임시 HWPX, 원본 잠금 파일을 만들지 않고, 사용자가 열어 둔 Hwp.exe를 찾거나 종료하지 않음.
 
 HWP5 직접 파서는 현재 문단 중심입니다. 표의 셀 격자·글상자·각주·서식 차이는
 후속 단계이며, 현재 표 안의 텍스트는 문단으로만 보일 수 있습니다.
@@ -75,7 +75,7 @@ dotnet run --project tests/Hdiff.Tests -- --with-com
 
 ```cmd
 build.cmd
-REM publish\Hdiff-v0.2.9-win-x64-fdd.zip
+REM publish\Hdiff-v0.3.0-win-x64-fdd.zip
 REM .NET Desktop Runtime이 설치된 PC용의 작은 FDD ZIP
 ```
 

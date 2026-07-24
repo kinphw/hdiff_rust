@@ -12,6 +12,10 @@ namespace Hdiff.UI.Worker;
 /// </summary>
 internal sealed class HwpComFallbackReader
 {
+    // Do not create a document lock beside the source file. In a DLP/DRM
+    // environment even this small write can be classified as a prohibited
+    // document operation. This reader never calls Save or SaveAs.
+    private const string ReadOnlyOpenOptions = "lock:false;forceopen:true;versionwarning:false";
     private static readonly Regex ControlCharacters = new(@"[\x00-\x08\x0B\x0C\x0E-\x1F]", RegexOptions.Compiled);
 
     public ParsedDocument Read(string path, string directFailure)
@@ -27,7 +31,7 @@ internal sealed class HwpComFallbackReader
             try { hwp.XHwpWindows.Item(0).Visible = false; } catch { }
             try { hwp.SetMessageBoxMode(0x10000); } catch { }
 
-            hwp.Open(Path.GetFullPath(path), "", "forceopen:true;versionwarning:false");
+            hwp.Open(Path.GetFullPath(path), "", ReadOnlyOpenOptions);
             var raw = (string?)hwp.GetTextFile("TEXT", "") ?? "";
             var text = Clean(raw);
             var blocks = text.Split('\n', StringSplitOptions.TrimEntries)
@@ -40,7 +44,8 @@ internal sealed class HwpComFallbackReader
         {
             if (hwp is not null)
             {
-                try { hwp.XHwpDocuments.Item(0).SetModified(false); } catch { }
+                // No SetModified/Save/SaveAs: the fallback only reads a TEXT
+                // string from memory, then closes the private COM document.
                 try { hwp.Run("FileClose"); } catch { }
                 try { hwp.SetMessageBoxMode(0xF0000); } catch { }
                 try { hwp.Quit(); } catch { }
