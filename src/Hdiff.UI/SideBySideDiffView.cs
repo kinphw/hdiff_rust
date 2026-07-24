@@ -82,6 +82,21 @@ internal sealed class SideBySideDiffView : UserControl
         }
     }
 
+    /// <summary>
+    /// Text size in typographic points. At 96 DPI, 9/10.5/12pt correspond to
+    /// the 12/14/16px choices shown in the toolbar.
+    /// </summary>
+    public float DocumentFontSizePoints
+    {
+        get => _canvas.DocumentFontSizePoints;
+        set
+        {
+            if (Math.Abs(_canvas.DocumentFontSizePoints - value) < 0.01f) return;
+            _canvas.SetDocumentFontSize(value);
+            QueueReflow();
+        }
+    }
+
     public void Clear()
     {
         _lastDiff = null;
@@ -333,11 +348,13 @@ internal sealed class SideBySideDiffView : UserControl
         private IReadOnlyList<VisualDiffRow> _rows = Array.Empty<VisualDiffRow>();
         private Rectangle _oldContentBounds;
         private Rectangle _newContentBounds;
+        private Font _documentFont;
 
         public DiffCanvas()
         {
             BackColor = Color.White;
-            Font = new Font("Consolas", 10.25f);
+            _documentFont = new Font("Consolas", 10.5f);
+            Font = _documentFont;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
             TabStop = false;
         }
@@ -345,8 +362,18 @@ internal sealed class SideBySideDiffView : UserControl
         public int ScrollOffset { get; set; }
         public int HorizontalOffset { get; set; }
         public int RowHeight => Font.Height + 4;
+        public float DocumentFontSizePoints => _documentFont.SizeInPoints;
         public Rectangle OldContentBounds => _oldContentBounds;
         public Rectangle NewContentBounds => _newContentBounds;
+
+        public void SetDocumentFontSize(float points)
+        {
+            var nextFont = new Font("Consolas", points, FontStyle.Regular, GraphicsUnit.Point);
+            var previousFont = _documentFont;
+            _documentFont = nextFont;
+            Font = nextFont;
+            previousFont.Dispose();
+        }
 
         public void SetRows(IReadOnlyList<VisualDiffRow> rows)
         {
@@ -359,6 +386,12 @@ internal sealed class SideBySideDiffView : UserControl
             _oldContentBounds = oldContentBounds;
             _newContentBounds = newContentBounds;
             Invalidate();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _documentFont.Dispose();
+            base.Dispose(disposing);
         }
 
         protected override void OnPaint(PaintEventArgs e)

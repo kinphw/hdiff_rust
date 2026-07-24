@@ -116,8 +116,10 @@ public sealed class Hwp5Reader
         {
             if (current is null) return;
             var text = Normalize(current.ToString());
-            if (text.Length > 0)
-                blocks.Add(new DocumentBlock(DocumentBlockKind.Paragraph, text, SectionPath: sectionPath));
+            // An empty HWP paragraph is meaningful source layout. Retain it in
+            // the model; DocumentDiffer decides whether its blank line should
+            // participate in a particular comparison.
+            blocks.Add(new DocumentBlock(DocumentBlockKind.Paragraph, text, SectionPath: sectionPath));
             current = null;
         }
     }

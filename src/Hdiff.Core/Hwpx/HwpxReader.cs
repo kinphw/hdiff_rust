@@ -43,7 +43,10 @@ public sealed class HwpxReader
                 case "p":
                 case "para":
                     var text = Normalize(string.Concat(child.Descendants().Where(e => e.Name.LocalName is "t" or "T" or "text").Select(e => e.Value)));
-                    if (text.Length > 0) blocks.Add(new DocumentBlock(DocumentBlockKind.Paragraph, text, SectionPath: section));
+                    // Preserve a deliberately blank paragraph. The comparison
+                    // option, rather than XML parsing, controls whether it is
+                    // visible as a diff row.
+                    blocks.Add(new DocumentBlock(DocumentBlockKind.Paragraph, text, SectionPath: section));
                     break;
                 case "tbl":
                 case "table":
@@ -64,4 +67,3 @@ public sealed class HwpxReader
 
     private static string Normalize(string value) => string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 }
-

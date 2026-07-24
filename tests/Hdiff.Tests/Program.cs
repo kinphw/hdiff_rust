@@ -34,6 +34,11 @@ Expect(before.Blocks.Select(x => x.Text).SequenceEqual(new[]
 }), "생성한 HWP5의 문단이 원문과 같아야 합니다.");
 Expect(after.Blocks.Count == 4, "변경 후 HWP5의 추가 문단을 읽어야 합니다.");
 
+var spacedHwp = Path.Combine(fixtureDir, "spaced-synthetic-hwp5.hwp");
+Hwp5FixtureWriter.Write(spacedHwp, "제1조 목적", "", "제2조 적용");
+var parsedSpacedHwp = reader.Read(spacedHwp);
+Expect(parsedSpacedHwp.Blocks.Select(x => x.Text).SequenceEqual(new[] { "제1조 목적", "", "제2조 적용" }), "HWP5의 빈 문단은 표시 옵션을 위해 보존해야 합니다.");
+
 var diff = new DocumentDiffer().Compare(before, after);
 Expect(diff.Summary.HasChanges, "전/후 HWP5 차이를 감지해야 합니다.");
 Expect(diff.ToGitLog().Contains("평가기간은 5년으로 한다.", StringComparison.Ordinal), "Git 로그에 변경 전 문장이 있어야 합니다.");
@@ -41,6 +46,24 @@ Expect(diff.ToGitLog().Contains("평가기간은 7년으로 한다.", StringComp
 var changedRow = diff.Rows.Single(x => x.Kind == DiffChangeKind.Modified);
 Expect(changedRow.OldFragments.Any(x => x is { Kind: InlineDiffFragmentKind.Removed, Text: "5" }), "변경 전 숫자만 문자 단위 삭제로 표시해야 합니다.");
 Expect(changedRow.NewFragments.Any(x => x is { Kind: InlineDiffFragmentKind.Added, Text: "7" }), "변경 후 숫자만 문자 단위 추가로 표시해야 합니다.");
+
+var blankBefore = new ParsedDocument("blank-before", new[]
+{
+    new DocumentBlock(DocumentBlockKind.Paragraph, "제1조 목적"),
+    new DocumentBlock(DocumentBlockKind.Paragraph, ""),
+    new DocumentBlock(DocumentBlockKind.Paragraph, "제2조 적용"),
+}, "test", Array.Empty<string>());
+var blankAfter = new ParsedDocument("blank-after", new[]
+{
+    new DocumentBlock(DocumentBlockKind.Paragraph, "제1조 목적"),
+    new DocumentBlock(DocumentBlockKind.Paragraph, ""),
+    new DocumentBlock(DocumentBlockKind.Paragraph, ""),
+    new DocumentBlock(DocumentBlockKind.Paragraph, "제2조 적용"),
+}, "test", Array.Empty<string>());
+var blankIgnoredDiff = new DocumentDiffer().Compare(blankBefore, blankAfter, ignoreBlankLines: true);
+Expect(!blankIgnoredDiff.Summary.HasChanges, "빈 문단 무시가 켜지면 연속 엔터만의 차이는 변경으로 세지 않아야 합니다.");
+var blankShownDiff = new DocumentDiffer().Compare(blankBefore, blankAfter, ignoreBlankLines: false);
+Expect(blankShownDiff.Summary.Inserted == 1, "빈 문단 무시를 끄면 추가된 엔터 한 줄을 표시해야 합니다.");
 
 var semanticBefore = new ParsedDocument("semantic-before", new[]
 {
@@ -70,6 +93,11 @@ WriteHwpx(hwpx, "제2조 적용", "HWPX도 한글 없이 읽는다.");
 var parsedHwpx = reader.Read(hwpx);
 Expect(parsedHwpx.Reader == "HWPX 직접 파서", "생성한 HWPX를 직접 읽어야 합니다.");
 Expect(parsedHwpx.Blocks.Select(x => x.Text).SequenceEqual(new[] { "제2조 적용", "HWPX도 한글 없이 읽는다." }), "HWPX 문단이 원문과 같아야 합니다.");
+
+var spacedHwpx = Path.Combine(fixtureDir, "spaced-sample.hwpx");
+WriteHwpx(spacedHwpx, "제2조 적용", "", "제3조 시행");
+var parsedSpacedHwpx = reader.Read(spacedHwpx);
+Expect(parsedSpacedHwpx.Blocks.Select(x => x.Text).SequenceEqual(new[] { "제2조 적용", "", "제3조 시행" }), "HWPX의 빈 문단은 표시 옵션을 위해 보존해야 합니다.");
 
 Console.WriteLine("PASS: direct HWP5/HWPX reader and diff tests");
 Console.WriteLine($"Generated HWP5 fixtures: {beforeHwp}");

@@ -74,10 +74,14 @@ public sealed class DocumentDiffer
         ParsedDocument oldDocument,
         ParsedDocument newDocument,
         bool ignoreWhitespace = true,
-        bool useGoogleDmpSemanticCleanup = true)
+        bool useGoogleDmpSemanticCleanup = true,
+        bool ignoreBlankLines = true)
     {
-        var oldText = string.Join("\n", oldDocument.ComparisonLines());
-        var newText = string.Join("\n", newDocument.ComparisonLines());
+        // Keep empty report paragraphs in ParsedDocument so users can elect to
+        // inspect them. They are weak diff anchors, however, so the default is
+        // to remove them before alignment and present a denser comparison.
+        var oldText = string.Join("\n", oldDocument.ComparisonLines(includeEmptyParagraphs: !ignoreBlankLines));
+        var newText = string.Join("\n", newDocument.ComparisonLines(includeEmptyParagraphs: !ignoreBlankLines));
         var model = _builder.BuildDiffModel(oldText, newText, ignoreWhitespace);
         var rows = new List<DiffRow>();
         var inserted = 0;

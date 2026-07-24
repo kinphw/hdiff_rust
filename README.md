@@ -7,6 +7,10 @@ Windows 네이티브 도구입니다. 원본 파일은 수정하지 않습니다
 
 - WinForms: 전/후 파일을 첨부 카드에 드래그하면 즉시 읽기 확인을 하고, 파일
   크기·확장자·추출 글자 수·문단 수·사용 파서를 표시
+- 상단 **글자 크기**: 작게(12px)·보통(14px, 기본)·크게(16px). 선택값은
+  `%LocalAppData%\Hdiff\settings.json`에 저장되어 새 배포본으로 바꿔도 유지
+- 기본 활성화된 **빈 개행(엔터) 무시**: 내용 없는 문단을 문단 대응과 변경 요약에서
+  제외. 체크를 풀면 원래 빈 문단도 비교 행으로 표시
 - 좌·우 문단 정렬 비교, 줄 번호 및 문자 단위 강조 (삭제는 빨강, 추가는 초록)
 - 기본 활성화된 Google Diff Match Patch semantic cleanup: 수정으로 대응된 문단 안의
   강조 범위를 읽기 좋게 정돈. 체크를 풀면 기존 DiffPlex 문자 강조와 직접 비교 가능
@@ -74,10 +78,10 @@ pwsh -File publish.ps1 -SelfContained
 
 ```cmd
 build.cmd
-REM publish\Hdiff-v0.2.7-win-x64-self-contained.zip
+REM publish\Hdiff-v0.2.8-win-x64-self-contained.zip
 
 build.cmd fdd
-REM publish\Hdiff-v0.2.7-win-x64-fdd.zip
+REM publish\Hdiff-v0.2.8-win-x64-fdd.zip
 REM .NET Desktop Runtime이 설치된 PC용의 작은 FDD ZIP
 ```
 

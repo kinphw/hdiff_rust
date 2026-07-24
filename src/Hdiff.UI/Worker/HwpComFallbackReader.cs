@@ -30,10 +30,10 @@ internal sealed class HwpComFallbackReader
             hwp.Open(Path.GetFullPath(path), "", "forceopen:true;versionwarning:false");
             var raw = (string?)hwp.GetTextFile("TEXT", "") ?? "";
             var text = Clean(raw);
-            var blocks = text.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            var blocks = text.Split('\n', StringSplitOptions.TrimEntries)
                 .Select(line => new DocumentBlock(DocumentBlockKind.Paragraph, line))
                 .ToArray();
-            if (blocks.Length == 0) throw new DocumentReadException("한글 COM이 본문 텍스트를 반환하지 않았습니다.");
+            if (blocks.All(block => string.IsNullOrWhiteSpace(block.Text))) throw new DocumentReadException("한글 COM이 본문 텍스트를 반환하지 않았습니다.");
             return new ParsedDocument(path, blocks, "한글 COM 폴백", new[] { $"직접 파서 실패 후 COM 텍스트 경로 사용: {directFailure}" });
         }
         finally
@@ -53,7 +53,6 @@ internal sealed class HwpComFallbackReader
     {
         value = WebUtility.HtmlDecode(value).Replace('\r', '\n');
         value = ControlCharacters.Replace(value, "");
-        return value.Replace("\n\n", "\n").Trim();
+        return value.Trim();
     }
 }
-

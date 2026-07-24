@@ -22,7 +22,12 @@ public sealed record ParsedDocument(
     string Reader,
     IReadOnlyList<string> Warnings)
 {
-    public IEnumerable<string> ComparisonLines()
+    /// <summary>
+    /// Gets the source paragraphs used as comparison rows. Empty paragraphs are
+    /// retained in the document model so the UI can show original report
+    /// spacing when requested, but are normally omitted as comparison noise.
+    /// </summary>
+    public IEnumerable<string> ComparisonLines(bool includeEmptyParagraphs = false)
     {
         foreach (var block in Blocks)
         {
@@ -31,7 +36,7 @@ public sealed record ParsedDocument(
                 foreach (var row in block.Rows)
                     yield return "[표] " + string.Join(" | ", row);
             }
-            else if (!string.IsNullOrWhiteSpace(block.Text))
+            else if (includeEmptyParagraphs || !string.IsNullOrWhiteSpace(block.Text))
             {
                 yield return block.Text;
             }
@@ -41,4 +46,3 @@ public sealed record ParsedDocument(
 
 public sealed class DocumentReadException(string message, Exception? innerException = null)
     : Exception(message, innerException);
-
