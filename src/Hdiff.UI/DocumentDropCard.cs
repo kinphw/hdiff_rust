@@ -18,6 +18,7 @@ internal sealed class DocumentDropCard : UserControl
     private readonly Button _clearButton = new();
     private string? _filePath;
     private bool _dragging;
+    private HdiffThemePalette _theme = HdiffThemes.Light;
 
     public DocumentDropCard(string caption, Color accentColor)
     {
@@ -79,6 +80,19 @@ internal sealed class DocumentDropCard : UserControl
     public event EventHandler? FileChanged;
 
     public string? FilePath => _filePath;
+
+    public void ApplyTheme(HdiffThemePalette theme)
+    {
+        _theme = theme;
+        _badge.BackColor = theme.BadgeBack;
+        _captionLabel.ForeColor = theme.MutedText;
+        _fileName.ForeColor = theme.Text;
+        _metadata.ForeColor = theme.MutedText;
+        _details.ForeColor = theme.MutedText;
+        ApplyButtonTheme(_browseButton);
+        ApplyButtonTheme(_clearButton);
+        UpdateVisualState();
+    }
 
     public void SetFile(string? path)
     {
@@ -142,7 +156,7 @@ internal sealed class DocumentDropCard : UserControl
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        var borderColor = _dragging ? _accentColor : (_filePath is null ? Color.FromArgb(194, 202, 213) : Color.FromArgb(150, 195, 172));
+        var borderColor = _dragging ? _accentColor : (_filePath is null ? _theme.Border : _theme.AttachedBorder);
         using var pen = new Pen(borderColor, _dragging ? 2f : 1f) { DashStyle = _filePath is null && !_dragging ? DashStyle.Dash : DashStyle.Solid };
         var bounds = ClientRectangle;
         bounds.Width--;
@@ -188,7 +202,7 @@ internal sealed class DocumentDropCard : UserControl
     {
         var hasFile = _filePath is not null;
         var filePath = _filePath!;
-        BackColor = _dragging ? Color.FromArgb(239, 247, 255) : (hasFile ? Color.FromArgb(247, 252, 249) : Color.White);
+        BackColor = _dragging ? _theme.DragSurfaceBack : (hasFile ? _theme.AttachedSurfaceBack : _theme.SurfaceBack);
         _captionLabel.Text = _dragging ? "이 위치에 놓으면 첨부됩니다" : _caption;
         _fileName.Text = _dragging ? ".hwp 또는 .hwpx 파일" : (hasFile ? Path.GetFileName(filePath) : "파일을 이 카드로 끌어 놓으세요");
         _metadata.Text = hasFile ? $"{Path.GetExtension(filePath).TrimStart('.').ToUpperInvariant()} · {FormatFileSize(new FileInfo(filePath).Length)}" : "드래그하거나 [파일 선택…]을 누르세요";
@@ -211,4 +225,13 @@ internal sealed class DocumentDropCard : UserControl
         < 1024 * 1024 => $"{bytes / 1024d:N1} KB",
         _ => $"{bytes / 1024d / 1024d:N1} MB",
     };
+
+    private void ApplyButtonTheme(Button button)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = _theme.ButtonBorder;
+        button.FlatAppearance.MouseOverBackColor = _theme.HeaderBack;
+        button.BackColor = _theme.ButtonBack;
+        button.ForeColor = _theme.ButtonText;
+    }
 }

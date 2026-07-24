@@ -11,6 +11,8 @@ internal sealed class MainForm : Form
     private readonly DocumentDropCard _newFile = new("변경 후", Color.FromArgb(28, 132, 89)) { Dock = DockStyle.Fill };
     private readonly Button _compareButton = new() { Text = "비교", AutoSize = true };
     private readonly Button _swapButton = new() { Text = "전/후 바꿈", AutoSize = true };
+    private readonly Label _themeLabel = new() { Text = "화면 테마", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(12, 7, 2, 3) };
+    private readonly ComboBox _themePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 112 };
     private readonly Label _fontSizeLabel = new() { Text = "글자 크기", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(12, 7, 2, 3) };
     private readonly ComboBox _fontSize = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 104 };
     private readonly CheckBox _comFallback = new() { Text = "직접 파서 실패 시 한글 COM 폴백", Checked = true, AutoSize = true };
@@ -22,6 +24,9 @@ internal sealed class MainForm : Form
     private readonly SideBySideDiffView _diffView = new() { Dock = DockStyle.Fill, WrapLongLines = true };
     private readonly ToolTip _toolTip = new();
     private readonly Icon? _applicationIcon = LoadApplicationIcon();
+    private readonly TableLayoutPanel _sources;
+    private readonly FlowLayoutPanel _actions;
+    private readonly Panel _summaryPanel;
     private ParsedDocument? _oldPreview;
     private ParsedDocument? _newPreview;
     private Task<ParsedDocument?>? _oldPreviewTask;
@@ -34,6 +39,12 @@ internal sealed class MainForm : Form
         new("large", "크게 (16px)", 12f),
     };
 
+    private static readonly DiffThemeOption[] ThemeOptions =
+    {
+        new("light", "화이트", HdiffThemeKind.Light),
+        new("rust-dark", "블랙 (Rust)", HdiffThemeKind.RustDark),
+    };
+
     public MainForm()
     {
         Text = "Hdiff — HWP/HWPX 변경 비교";
@@ -44,6 +55,7 @@ internal sealed class MainForm : Form
         if (_applicationIcon is not null) Icon = _applicationIcon;
 
         ConfigureFontSizePicker();
+        ConfigureThemePicker();
         _toolTip.SetToolTip(_ignoreWhitespace, "띄어쓰기·탭·줄 끝 공백만 다른 경우에는 변경으로 표시하지 않습니다.");
         _toolTip.SetToolTip(_ignoreBlankLines, "내용 없는 문단은 비교 행과 변경 요약에서 제외합니다. 체크를 풀면 원래 빈 문단도 표시합니다.");
         _toolTip.SetToolTip(_googleDmpCleanup, "수정으로 짝지어진 문단 내부의 강조 범위를 Google Diff Match Patch semantic cleanup으로 읽기 좋게 정돈합니다.");
@@ -51,29 +63,30 @@ internal sealed class MainForm : Form
         _oldFile.FileChanged += (_, _) => HandleFileChanged(_oldFile, oldSide: true);
         _newFile.FileChanged += (_, _) => HandleFileChanged(_newFile, oldSide: false);
 
-        var sources = new TableLayoutPanel { Dock = DockStyle.Top, Height = 124, Padding = new Padding(12, 12, 12, 8), ColumnCount = 2, RowCount = 1 };
-        sources.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        sources.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        sources.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        sources.Controls.Add(_oldFile, 0, 0);
-        sources.Controls.Add(_newFile, 1, 0);
+        _sources = new TableLayoutPanel { Dock = DockStyle.Top, Height = 124, Padding = new Padding(12, 12, 12, 8), ColumnCount = 2, RowCount = 1 };
+        _sources.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        _sources.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        _sources.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _sources.Controls.Add(_oldFile, 0, 0);
+        _sources.Controls.Add(_newFile, 1, 0);
 
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12, 0, 12, 8) };
+        _actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12, 0, 12, 8) };
         _compareButton.Click += async (_, _) => await CompareAsync();
         _swapButton.Click += (_, _) => SwapFiles();
         _wrapLongLines.CheckedChanged += (_, _) => _diffView.WrapLongLines = _wrapLongLines.Checked;
         _ignoreBlankLines.CheckedChanged += (_, _) => ClearPreviousComparison();
         _googleDmpCleanup.CheckedChanged += (_, _) => ClearPreviousComparison();
         _comFallback.CheckedChanged += (_, _) => RefreshPreviewsForParserSetting();
-        actions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _fontSizeLabel, _fontSize, _wrapLongLines, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback });
+        _actions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _themeLabel, _themePicker, _fontSizeLabel, _fontSize, _wrapLongLines, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback });
 
-        var summaryPanel = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(14, 4, 12, 4) };
-        summaryPanel.Controls.Add(_summary);
+        _summaryPanel = new Panel { Dock = DockStyle.Top, Height = 32, Padding = new Padding(14, 4, 12, 4) };
+        _summaryPanel.Controls.Add(_summary);
 
         Controls.Add(_diffView);
-        Controls.Add(summaryPanel);
-        Controls.Add(actions);
-        Controls.Add(sources);
+        Controls.Add(_summaryPanel);
+        Controls.Add(_actions);
+        Controls.Add(_sources);
+        ApplyTheme((DiffThemeOption)_themePicker.SelectedItem!, persist: false);
     }
 
     protected override void Dispose(bool disposing)
@@ -136,6 +149,61 @@ internal sealed class MainForm : Form
     {
         _diffView.DocumentFontSizePoints = option.Points;
         if (persist) HdiffUserSettings.SaveDiffFontSizeKey(option.Key);
+    }
+
+    private void ConfigureThemePicker()
+    {
+        _themePicker.DisplayMember = nameof(DiffThemeOption.Label);
+        _themePicker.Items.AddRange(ThemeOptions);
+        var savedKey = HdiffUserSettings.LoadThemeKey();
+        _themePicker.SelectedItem = ThemeOptions.FirstOrDefault(option => option.Key == savedKey)
+            ?? ThemeOptions.Single(option => option.Key == "light");
+        _themePicker.SelectedIndexChanged += (_, _) =>
+        {
+            if (_themePicker.SelectedItem is DiffThemeOption selected) ApplyTheme(selected, persist: true);
+        };
+    }
+
+    private void ApplyTheme(DiffThemeOption option, bool persist)
+    {
+        var theme = HdiffThemes.Get(option.Theme);
+        BackColor = theme.AppBack;
+        ForeColor = theme.Text;
+        _sources.BackColor = theme.AppBack;
+        _actions.BackColor = theme.AppBack;
+        _summaryPanel.BackColor = theme.SurfaceBack;
+        _summary.ForeColor = theme.Text;
+        _themeLabel.ForeColor = theme.Text;
+        _fontSizeLabel.ForeColor = theme.Text;
+        ApplyPickerTheme(_themePicker, theme);
+        ApplyPickerTheme(_fontSize, theme);
+        ApplyButtonTheme(_compareButton, theme);
+        ApplyButtonTheme(_swapButton, theme);
+        foreach (var checkBox in new[] { _wrapLongLines, _ignoreWhitespace, _ignoreBlankLines, _googleDmpCleanup, _comFallback })
+        {
+            checkBox.BackColor = theme.AppBack;
+            checkBox.ForeColor = theme.Text;
+        }
+        _oldFile.ApplyTheme(theme);
+        _newFile.ApplyTheme(theme);
+        _diffView.ApplyTheme(theme);
+        if (persist) HdiffUserSettings.SaveThemeKey(option.Key);
+    }
+
+    private static void ApplyPickerTheme(ComboBox picker, HdiffThemePalette theme)
+    {
+        picker.FlatStyle = FlatStyle.Flat;
+        picker.BackColor = theme.SurfaceBack;
+        picker.ForeColor = theme.Text;
+    }
+
+    private static void ApplyButtonTheme(Button button, HdiffThemePalette theme)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = theme.ButtonBorder;
+        button.FlatAppearance.MouseOverBackColor = theme.HeaderBack;
+        button.BackColor = theme.ButtonBack;
+        button.ForeColor = theme.ButtonText;
     }
 
     private void SwapFiles()
@@ -241,6 +309,11 @@ internal sealed class MainForm : Form
     }
 
     private sealed record DiffFontSizeOption(string Key, string Label, float Points)
+    {
+        public override string ToString() => Label;
+    }
+
+    private sealed record DiffThemeOption(string Key, string Label, HdiffThemeKind Theme)
     {
         public override string ToString() => Label;
     }

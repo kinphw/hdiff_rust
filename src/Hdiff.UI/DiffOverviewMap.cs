@@ -15,6 +15,7 @@ internal sealed class DiffOverviewMap : Control
     private readonly bool _oldSide;
     private readonly ToolTip _toolTip = new();
     private IReadOnlyList<DiffOverviewLine> _lines = Array.Empty<DiffOverviewLine>();
+    private HdiffThemePalette _theme = HdiffThemes.Light;
     private int _firstVisibleLine;
     private int _visibleLineCount = 1;
     private bool _dragging;
@@ -34,6 +35,13 @@ internal sealed class DiffOverviewMap : Control
     }
 
     public event EventHandler<int>? NavigateToLineRequested;
+
+    public void ApplyTheme(HdiffThemePalette theme)
+    {
+        _theme = theme;
+        BackColor = theme.HeaderBack;
+        Invalidate();
+    }
 
     public void SetLines(IReadOnlyList<DiffOverviewLine> lines)
     {
@@ -75,8 +83,8 @@ internal sealed class DiffOverviewMap : Control
         var viewportBottom = ScaleLine(Math.Min(_lines.Count, _firstVisibleLine + _visibleLineCount));
         var viewportHeight = Math.Max(16, viewportBottom - viewportTop);
         viewportTop = Math.Min(Math.Max(0, viewportTop), Math.Max(0, ClientSize.Height - viewportHeight));
-        using var viewportFill = new SolidBrush(Color.FromArgb(38, 55, 65, 81));
-        using var viewportBorder = new Pen(Color.FromArgb(125, 89, 98, 112));
+        using var viewportFill = new SolidBrush(_theme.OverviewViewportFill);
+        using var viewportBorder = new Pen(_theme.OverviewViewportBorder);
         e.Graphics.FillRectangle(viewportFill, 1, viewportTop, Math.Max(1, ClientSize.Width - 2), viewportHeight);
         e.Graphics.DrawRectangle(viewportBorder, 0, viewportTop, Math.Max(1, ClientSize.Width - 1), Math.Max(1, viewportHeight - 1));
 
@@ -145,19 +153,19 @@ internal sealed class DiffOverviewMap : Control
 
     private Color GetLineColor(DiffChangeKind kind) => kind switch
     {
-        DiffChangeKind.Deleted when _oldSide => Color.FromArgb(212, 202, 93, 100),
-        DiffChangeKind.Inserted when !_oldSide => Color.FromArgb(212, 84, 155, 108),
-        DiffChangeKind.Modified when _oldSide => Color.FromArgb(212, 202, 93, 100),
-        DiffChangeKind.Modified => Color.FromArgb(212, 84, 155, 108),
-        _ => Color.FromArgb(92, 118, 126, 140),
+        DiffChangeKind.Deleted when _oldSide => Color.FromArgb(180, _theme.RemovedInlineBack),
+        DiffChangeKind.Inserted when !_oldSide => Color.FromArgb(180, _theme.AddedInlineBack),
+        DiffChangeKind.Modified when _oldSide => Color.FromArgb(180, _theme.RemovedInlineBack),
+        DiffChangeKind.Modified => Color.FromArgb(180, _theme.AddedInlineBack),
+        _ => Color.FromArgb(145, _theme.OverviewDocument),
     };
 
     private Color GetSignalColor(DiffChangeKind kind) => kind switch
     {
-        DiffChangeKind.Deleted when _oldSide => Color.FromArgb(220, 38, 38),
-        DiffChangeKind.Inserted when !_oldSide => Color.FromArgb(22, 163, 74),
-        DiffChangeKind.Modified when _oldSide => Color.FromArgb(234, 88, 12),
-        DiffChangeKind.Modified => Color.FromArgb(5, 150, 105),
-        _ => Color.FromArgb(71, 85, 105),
+        DiffChangeKind.Deleted when _oldSide => _theme.RemovedText,
+        DiffChangeKind.Inserted when !_oldSide => _theme.AddedText,
+        DiffChangeKind.Modified when _oldSide => Color.FromArgb(245, 158, 11),
+        DiffChangeKind.Modified => _theme.AddedText,
+        _ => _theme.OverviewDocument,
     };
 }

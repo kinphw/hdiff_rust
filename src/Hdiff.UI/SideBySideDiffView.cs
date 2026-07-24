@@ -16,6 +16,7 @@ internal sealed class SideBySideDiffView : UserControl
     private static readonly IReadOnlyList<InlineDiffFragment> EmptyFragments = Array.Empty<InlineDiffFragment>();
     private readonly Label _oldHeader = CreateHeader("변경 전");
     private readonly Label _newHeader = CreateHeader("변경 후");
+    private readonly Panel _headerDivider = new() { Dock = DockStyle.Fill };
     private readonly DiffOverviewMap _oldOverview = new(oldSide: true) { Dock = DockStyle.None };
     private readonly DiffOverviewMap _newOverview = new(oldSide: false) { Dock = DockStyle.None };
     private readonly VScrollBar _verticalScroll = new() { Dock = DockStyle.Right };
@@ -29,6 +30,7 @@ internal sealed class SideBySideDiffView : UserControl
     private bool _reflowQueued;
     private int _oldTextWidth;
     private int _newTextWidth;
+    private HdiffThemePalette _theme = HdiffThemes.Light;
 
     public SideBySideDiffView()
     {
@@ -46,7 +48,7 @@ internal sealed class SideBySideDiffView : UserControl
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SplitterWidth));
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         headers.Controls.Add(_oldHeader, 0, 0);
-        headers.Controls.Add(new Panel { BackColor = BackColor, Dock = DockStyle.Fill }, 1, 0);
+        headers.Controls.Add(_headerDivider, 1, 0);
         headers.Controls.Add(_newHeader, 2, 0);
 
         _oldOverview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
@@ -67,6 +69,7 @@ internal sealed class SideBySideDiffView : UserControl
         Controls.Add(_horizontalScroll);
         Controls.Add(_verticalScroll);
         Controls.Add(headers);
+        ApplyTheme(_theme);
     }
 
     /// <summary>Like VS Code's word wrap, but wrapping is calculated once for both sides.</summary>
@@ -95,6 +98,24 @@ internal sealed class SideBySideDiffView : UserControl
             _canvas.SetDocumentFontSize(value);
             QueueReflow();
         }
+    }
+
+    public void ApplyTheme(HdiffThemePalette theme)
+    {
+        _theme = theme;
+        BackColor = theme.AppBack;
+        _body.BackColor = theme.CanvasBack;
+        _oldHeader.BackColor = theme.HeaderBack;
+        _newHeader.BackColor = theme.HeaderBack;
+        _oldHeader.ForeColor = theme.Text;
+        _newHeader.ForeColor = theme.Text;
+        _headerDivider.BackColor = theme.AppBack;
+        _verticalScroll.BackColor = theme.SurfaceBack;
+        _horizontalScroll.BackColor = theme.SurfaceBack;
+        _canvas.ApplyTheme(theme);
+        _oldOverview.ApplyTheme(theme);
+        _newOverview.ApplyTheme(theme);
+        Invalidate();
     }
 
     public void Clear()
@@ -349,6 +370,7 @@ internal sealed class SideBySideDiffView : UserControl
         private Rectangle _oldContentBounds;
         private Rectangle _newContentBounds;
         private Font _documentFont;
+        private HdiffThemePalette _theme = HdiffThemes.Light;
 
         public DiffCanvas()
         {
@@ -375,6 +397,13 @@ internal sealed class SideBySideDiffView : UserControl
             previousFont.Dispose();
         }
 
+        public void ApplyTheme(HdiffThemePalette theme)
+        {
+            _theme = theme;
+            BackColor = theme.CanvasBack;
+            Invalidate();
+        }
+
         public void SetRows(IReadOnlyList<VisualDiffRow> rows)
         {
             _rows = rows;
@@ -397,7 +426,7 @@ internal sealed class SideBySideDiffView : UserControl
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            e.Graphics.Clear(Color.White);
+            e.Graphics.Clear(_theme.CanvasBack);
             if (_rows.Count == 0) return;
 
             var firstRow = Math.Clamp(ScrollOffset / RowHeight, 0, _rows.Count - 1);
@@ -409,7 +438,7 @@ internal sealed class SideBySideDiffView : UserControl
                 DrawCell(e.Graphics, _newContentBounds, y, row.NewLine, row.NewFragments, row.Kind, oldSide: false, row.NewImaginary);
             }
 
-            using var divider = new Pen(Color.FromArgb(220, 224, 230));
+            using var divider = new Pen(_theme.Border);
             var dividerX = _oldContentBounds.Right + (SplitterWidth / 2);
             e.Graphics.DrawLine(divider, dividerX, 0, dividerX, ClientSize.Height);
         }
@@ -432,8 +461,10 @@ internal sealed class SideBySideDiffView : UserControl
 
             var gutter = new Rectangle(bounds.X, y, Math.Min(LineNumberWidth, bounds.Width), RowHeight);
             var lineText = lineNumber?.ToString() ?? string.Empty;
-            TextRenderer.DrawText(graphics, lineText, Font, gutter, Color.FromArgb(105, 112, 122), TextFlags | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
-            using var gutterPen = new Pen(Color.FromArgb(220, 224, 230));
+            using var gutterBrush = new SolidBrush(_theme.GutterBack);
+            graphics.FillRectangle(gutterBrush, gutter);
+            TextRenderer.DrawText(graphics, lineText, Font, gutter, _theme.GutterText, TextFlags | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            using var gutterPen = new Pen(_theme.Border);
             graphics.DrawLine(gutterPen, gutter.Right - 1, y + 2, gutter.Right - 1, y + RowHeight - 3);
 
             var textBounds = Rectangle.FromLTRB(gutter.Right + 5, y, bounds.Right, y + RowHeight);
@@ -446,7 +477,7 @@ internal sealed class SideBySideDiffView : UserControl
                 {
                     if (imaginary)
                     {
-                        TextRenderer.DrawText(graphics, "·", Font, new Point(x, y + 2), Color.FromArgb(145, 150, 158), TextFlags);
+                        TextRenderer.DrawText(graphics, "·", Font, new Point(x, y + 2), _theme.MutedText, TextFlags);
                     }
                     return;
                 }
@@ -467,22 +498,22 @@ internal sealed class SideBySideDiffView : UserControl
             }
         }
 
-        private static (Color ForeColor, Color BackColor) GetFragmentColors(InlineDiffFragmentKind kind, Color lineBackColor) => kind switch
+        private (Color ForeColor, Color BackColor) GetFragmentColors(InlineDiffFragmentKind kind, Color lineBackColor) => kind switch
         {
-            InlineDiffFragmentKind.Removed => (Color.FromArgb(154, 31, 35), Color.FromArgb(255, 199, 206)),
-            InlineDiffFragmentKind.Added => (Color.FromArgb(0, 104, 50), Color.FromArgb(198, 239, 206)),
-            _ => (Color.FromArgb(35, 39, 47), lineBackColor),
+            InlineDiffFragmentKind.Removed => (_theme.RemovedText, _theme.RemovedInlineBack),
+            InlineDiffFragmentKind.Added => (_theme.AddedText, _theme.AddedInlineBack),
+            _ => (_theme.Text, lineBackColor),
         };
 
-        private static Color GetLineBackColor(DiffChangeKind kind, bool oldSide) => kind switch
+        private Color GetLineBackColor(DiffChangeKind kind, bool oldSide) => kind switch
         {
-            DiffChangeKind.Inserted when oldSide => Color.FromArgb(248, 249, 250),
-            DiffChangeKind.Deleted when !oldSide => Color.FromArgb(248, 249, 250),
-            DiffChangeKind.Deleted when oldSide => Color.FromArgb(255, 242, 242),
-            DiffChangeKind.Inserted when !oldSide => Color.FromArgb(239, 252, 245),
-            DiffChangeKind.Modified when oldSide => Color.FromArgb(255, 242, 242),
-            DiffChangeKind.Modified => Color.FromArgb(239, 252, 245),
-            _ => Color.White,
+            DiffChangeKind.Inserted when oldSide => _theme.EmptyLineBack,
+            DiffChangeKind.Deleted when !oldSide => _theme.EmptyLineBack,
+            DiffChangeKind.Deleted when oldSide => _theme.DeletedLineBack,
+            DiffChangeKind.Inserted when !oldSide => _theme.InsertedLineBack,
+            DiffChangeKind.Modified when oldSide => _theme.DeletedLineBack,
+            DiffChangeKind.Modified => _theme.InsertedLineBack,
+            _ => _theme.CanvasBack,
         };
     }
 }

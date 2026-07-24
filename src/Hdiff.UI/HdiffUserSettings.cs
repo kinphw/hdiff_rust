@@ -17,25 +17,42 @@ internal static class HdiffUserSettings
 
     public static string LoadDiffFontSizeKey()
     {
-        try
-        {
-            if (!File.Exists(SettingsPath)) return DefaultFontSizeKey;
-            var settings = JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath));
-            return string.IsNullOrWhiteSpace(settings?.DiffFontSize) ? DefaultFontSizeKey : settings.DiffFontSize;
-        }
-        catch
-        {
-            return DefaultFontSizeKey;
-        }
+        var settings = Load();
+        return string.IsNullOrWhiteSpace(settings.DiffFontSize) ? DefaultFontSizeKey : settings.DiffFontSize;
     }
 
     public static void SaveDiffFontSizeKey(string key)
+        => Save(Load() with { DiffFontSize = key });
+
+    public static string LoadThemeKey()
+    {
+        var settings = Load();
+        return string.IsNullOrWhiteSpace(settings.Theme) ? "light" : settings.Theme;
+    }
+
+    public static void SaveThemeKey(string key)
+        => Save(Load() with { Theme = key });
+
+    private static Settings Load()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath)) return new Settings(null, null);
+            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? new Settings(null, null);
+        }
+        catch
+        {
+            return new Settings(null, null);
+        }
+    }
+
+    private static void Save(Settings settings)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             var temporaryPath = SettingsPath + ".tmp";
-            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(new Settings(key)));
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(settings));
             File.Move(temporaryPath, SettingsPath, overwrite: true);
         }
         catch
@@ -44,5 +61,5 @@ internal static class HdiffUserSettings
         }
     }
 
-    private sealed record Settings(string DiffFontSize);
+    private sealed record Settings(string? DiffFontSize, string? Theme);
 }
