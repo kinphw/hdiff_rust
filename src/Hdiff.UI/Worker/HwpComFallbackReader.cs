@@ -7,8 +7,9 @@ namespace Hdiff.UI.Worker;
 
 /// <summary>
 /// Transitional fallback only. It reads text from a privately-created Hancom
-/// automation instance, creates no normalized copy, and never enumerates or
-/// kills user-owned Hwp.exe processes.
+/// automation instance through InitScan/GetText, which is a memory-only path.
+/// It never calls GetTextFile, Save, SaveAs, or enumerates user-owned Hwp.exe
+/// processes.
 /// </summary>
 internal sealed class HwpComFallbackReader
 {
@@ -32,7 +33,7 @@ internal sealed class HwpComFallbackReader
             try { hwp.SetMessageBoxMode(0x10000); } catch { }
 
             hwp.Open(Path.GetFullPath(path), "", ReadOnlyOpenOptions);
-            var raw = (string?)hwp.GetTextFile("TEXT", "") ?? "";
+            var raw = ReadEntireDocumentByScan((object)hwp);
             var text = Clean(raw);
             var blocks = text.Split('\n', StringSplitOptions.TrimEntries)
                 .Select(line => new DocumentBlock(DocumentBlockKind.Paragraph, line))
@@ -59,5 +60,80 @@ internal sealed class HwpComFallbackReader
         value = WebUtility.HtmlDecode(value).Replace('\r', '\n');
         value = ControlCharacters.Replace(value, "");
         return value.Trim();
+    }
+
+    private static string ReadEntireDocumentByScan(object comObject)
+    {
+        // Newer Hancom builds expose the documented IID, but a few installed
+        // versions reject that QueryInterface call even though the methods are
+        // available through IDispatch. Both routes below are still the same
+        // memory-only InitScan/GetText API; neither falls back to GetTextFile.
+        if (comObject is IHwpTextScanner scanner)
+            return Scan(
+                () => scanner.InitScan(null, 0x77, null, null, null, null),
+                () =>
+                {
+                    var state = scanner.GetText(out var chunk);
+                    return (state, chunk);
+                },
+                scanner.ReleaseScan);
+
+        try
+        {
+            dynamic hwpScanner = comObject;
+            return Scan(
+                () => hwpScanner.InitScan(null, 0x77, null, null, null, null),
+                () =>
+                {
+                    var state = hwpScanner.GetText(out string chunk);
+                    return ((int)state, chunk);
+                },
+                () => hwpScanner.ReleaseScan());
+        }
+        catch (DocumentReadException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new DocumentReadException(
+                "한글 COM 메모리 스캔 인터페이스를 호출하지 못했습니다. " +
+                "보안 정책 팝업을 유발하는 GetTextFile 폴백은 사용하지 않습니다.", exception);
+        }
+    }
+
+    private static string Scan(
+        Func<bool> initScan,
+        Func<(int State, string Text)> getText,
+        Action releaseScan)
+    {
+        var builder = new System.Text.StringBuilder();
+        try
+        {
+            // 0x77 scans the complete document (0xFF is selection-only).
+            // This remains a memory-only API and never invokes Hancom's
+            // internal SaveBlockAction path used by GetTextFile.
+            if (!initScan())
+                throw new DocumentReadException("한글 COM 본문 스캔을 시작하지 못했습니다.");
+
+            // 2 = 일반 텍스트, 3 = 다음 문단. 다른 상태는 문서/리스트의 끝 또는
+            // 제어문자 경계이므로 멈춘다. Guard prevents a malformed document from
+            // keeping a COM worker alive forever.
+            for (var count = 0; count < 1_000_000; count++)
+            {
+                var (state, chunk) = getText();
+                if (state is 2 or 3)
+                {
+                    builder.Append(chunk);
+                    continue;
+                }
+                break;
+            }
+        }
+        finally
+        {
+            try { releaseScan(); } catch { }
+        }
+        return builder.ToString();
     }
 }

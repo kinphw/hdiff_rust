@@ -47,6 +47,12 @@ public sealed class Hwp5Reader
             ParseSection(records, $"본문 {SectionIndex(sectionName) + 1}", blocks, warnings);
         }
 
+        // HwpObject writes a final BreakPara when saving, which materializes
+        // as one empty paragraph after the last real paragraph. It is an end
+        // marker rather than report layout; retain meaningful internal blank
+        // paragraphs but discard only document-edge blanks.
+        TrimDocumentEdgeBlankParagraphs(blocks);
+
         if (blocks.Count == 0)
             throw new DocumentReadException("HWP5 본문에서 문단 텍스트를 찾지 못했습니다.");
         return new ParsedDocument(path, blocks, "HWP5 직접 파서", warnings);
@@ -160,6 +166,14 @@ public sealed class Hwp5Reader
 
     private static string Normalize(string text)
         => string.Join(" ", text.Replace('\r', '\n').Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+
+    private static void TrimDocumentEdgeBlankParagraphs(List<DocumentBlock> blocks)
+    {
+        while (blocks.Count > 0 && blocks[0].Kind == DocumentBlockKind.Paragraph && string.IsNullOrWhiteSpace(blocks[0].Text))
+            blocks.RemoveAt(0);
+        while (blocks.Count > 0 && blocks[^1].Kind == DocumentBlockKind.Paragraph && string.IsNullOrWhiteSpace(blocks[^1].Text))
+            blocks.RemoveAt(blocks.Count - 1);
+    }
 
     private static byte[] Inflate(byte[] compressed, string sectionName)
     {
