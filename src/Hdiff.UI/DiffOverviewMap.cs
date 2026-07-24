@@ -10,6 +10,8 @@ internal sealed record DiffOverviewLine(DiffChangeKind Kind, int TextLength, boo
 /// </summary>
 internal sealed class DiffOverviewMap : Control
 {
+    private const int ChangeRailWidth = 6;
+    private const int MinimumChangeSignalHeight = 2;
     private readonly bool _oldSide;
     private readonly ToolTip _toolTip = new();
     private IReadOnlyList<DiffOverviewLine> _lines = Array.Empty<DiffOverviewLine>();
@@ -28,7 +30,7 @@ internal sealed class DiffOverviewMap : Control
         MinimumSize = new Size(42, 0);
         Size = new Size(42, 100);
         TabStop = false;
-        _toolTip.SetToolTip(this, "변경 개요 — 클릭하거나 끌어서 해당 위치로 이동");
+        _toolTip.SetToolTip(this, "변경 개요 — 왼쪽의 진한 색 막대는 변경 위치입니다. 클릭하거나 끌어서 해당 위치로 이동합니다.");
     }
 
     public event EventHandler<int>? NavigateToLineRequested;
@@ -63,7 +65,7 @@ internal sealed class DiffOverviewMap : Control
             var y = ScaleLine(index);
             var nextY = ScaleLine(index + 1);
             var height = Math.Max(1, nextY - y);
-            var width = Math.Max(3, (int)Math.Ceiling((ClientSize.Width - 7) * (line.TextLength / (double)maxTextLength)));
+            var width = Math.Max(3, (int)Math.Ceiling((ClientSize.Width - ChangeRailWidth - 7) * (line.TextLength / (double)maxTextLength)));
             var x = ClientSize.Width - width - 3;
             using var brush = new SolidBrush(GetLineColor(line.Kind));
             e.Graphics.FillRectangle(brush, x, y, width, height);
@@ -77,6 +79,11 @@ internal sealed class DiffOverviewMap : Control
         using var viewportBorder = new Pen(Color.FromArgb(125, 89, 98, 112));
         e.Graphics.FillRectangle(viewportFill, 1, viewportTop, Math.Max(1, ClientSize.Width - 2), viewportHeight);
         e.Graphics.DrawRectangle(viewportBorder, 0, viewportTop, Math.Max(1, ClientSize.Width - 1), Math.Max(1, viewportHeight - 1));
+
+        // A literal one-row minimap mark disappears in a multi-thousand-row
+        // report. Draw a high-contrast, minimum-two-pixel rail after the
+        // viewport overlay so an isolated change remains discoverable.
+        DrawChangeSignalRail(e.Graphics);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -118,6 +125,24 @@ internal sealed class DiffOverviewMap : Control
 
     private int ScaleLine(int line) => (int)Math.Floor(line * (ClientSize.Height / (double)_lines.Count));
 
+    private void DrawChangeSignalRail(Graphics graphics)
+    {
+        for (var index = 0; index < _lines.Count; index++)
+        {
+            var line = _lines[index];
+            if (line.IsImaginary || line.Kind == DiffChangeKind.Unchanged) continue;
+
+            var y = ScaleLine(index);
+            var nextY = ScaleLine(index + 1);
+            var height = Math.Max(MinimumChangeSignalHeight, nextY - y);
+            height = Math.Min(height, ClientSize.Height - y);
+            if (height <= 0) continue;
+
+            using var brush = new SolidBrush(GetSignalColor(line.Kind));
+            graphics.FillRectangle(brush, 1, y, ChangeRailWidth, height);
+        }
+    }
+
     private Color GetLineColor(DiffChangeKind kind) => kind switch
     {
         DiffChangeKind.Deleted when _oldSide => Color.FromArgb(212, 202, 93, 100),
@@ -125,5 +150,14 @@ internal sealed class DiffOverviewMap : Control
         DiffChangeKind.Modified when _oldSide => Color.FromArgb(212, 202, 93, 100),
         DiffChangeKind.Modified => Color.FromArgb(212, 84, 155, 108),
         _ => Color.FromArgb(92, 118, 126, 140),
+    };
+
+    private Color GetSignalColor(DiffChangeKind kind) => kind switch
+    {
+        DiffChangeKind.Deleted when _oldSide => Color.FromArgb(220, 38, 38),
+        DiffChangeKind.Inserted when !_oldSide => Color.FromArgb(22, 163, 74),
+        DiffChangeKind.Modified when _oldSide => Color.FromArgb(234, 88, 12),
+        DiffChangeKind.Modified => Color.FromArgb(5, 150, 105),
+        _ => Color.FromArgb(71, 85, 105),
     };
 }
