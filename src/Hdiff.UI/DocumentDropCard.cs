@@ -27,8 +27,8 @@ internal sealed class DocumentDropCard : UserControl
         AllowDrop = true;
         BackColor = Color.White;
         Cursor = Cursors.Default;
-        Height = 104;
-        MinimumSize = new Size(350, 104);
+        Height = 96;
+        MinimumSize = new Size(350, 96);
         Margin = new Padding(4);
         Padding = new Padding(12);
 
@@ -60,8 +60,13 @@ internal sealed class DocumentDropCard : UserControl
         _browseButton.Click += (_, _) => Browse();
 
         _clearButton.AutoSize = false;
-        _clearButton.Text = "×";
+        // Native Button text includes asymmetric glyph padding. The compact
+        // close control paints a geometric X at its exact center instead.
+        _clearButton.Text = string.Empty;
         _clearButton.Font = new Font("Segoe UI", 12f, FontStyle.Regular);
+        _clearButton.Padding = Padding.Empty;
+        _clearButton.TextAlign = ContentAlignment.MiddleCenter;
+        _clearButton.Paint += PaintClearGlyph;
         _clearButton.Visible = false;
         _clearButton.Click += (_, _) => SetFile(null);
 
@@ -236,5 +241,29 @@ internal sealed class DocumentDropCard : UserControl
         button.FlatAppearance.MouseOverBackColor = _theme.HeaderBack;
         button.BackColor = _theme.ButtonBack;
         button.ForeColor = _theme.ButtonText;
+    }
+
+    private static void PaintClearGlyph(object? sender, PaintEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var centerX = (button.ClientSize.Width - 1) / 2f;
+        var centerY = (button.ClientSize.Height - 1) / 2f;
+        var halfLength = Math.Max(4f, button.ClientSize.Height * 0.18f);
+        var previousSmoothing = e.Graphics.SmoothingMode;
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        try
+        {
+            using var pen = new Pen(button.ForeColor, 1.25f)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+            };
+            e.Graphics.DrawLine(pen, centerX - halfLength, centerY - halfLength, centerX + halfLength, centerY + halfLength);
+            e.Graphics.DrawLine(pen, centerX + halfLength, centerY - halfLength, centerX - halfLength, centerY + halfLength);
+        }
+        finally
+        {
+            e.Graphics.SmoothingMode = previousSmoothing;
+        }
     }
 }

@@ -106,7 +106,7 @@ public sealed class Hwp5Reader
             else if (tag == ParaTextTag)
             {
                 current ??= new StringBuilder();
-                current.Append(DecodeParaText(payload));
+                current.Append(DecodeParaText(payload, sectionPath, warnings));
             }
             else if (tag is not 68 and not 69 and not 70 and not 71 and not 72 and not 73 and not 74 and not 75 and not 76 and not 77)
             {
@@ -130,36 +130,52 @@ public sealed class Hwp5Reader
         }
     }
 
-    private static string DecodeParaText(ReadOnlySpan<byte> payload)
+    private static string DecodeParaText(
+        ReadOnlySpan<byte> payload,
+        string sectionPath,
+        List<string> warnings)
     {
         var sb = new StringBuilder(payload.Length / 2);
-        for (var i = 0; i + 1 < payload.Length; i += 2)
+        var offset = 0;
+        while (offset + 1 < payload.Length)
         {
-            var value = (char)(payload[i] | payload[i + 1] << 8);
+            var value = (char)(payload[offset] | payload[offset + 1] << 8);
+            if (value >= ' ')
+            {
+                sb.Append(value);
+                offset += sizeof(char);
+                continue;
+            }
+
             switch (value)
             {
+                // HWP5 CHAR controls occupy one WCHAR.
+                case '\0':
+                case >= '\u0018' and <= '\u001F':
+                    offset += sizeof(char);
+                    continue;
                 case '\r':
                 case '\n':
                     sb.Append('\n');
-                    break;
-                case >= '\u0001' and <= '\u0008':
-                    // HWP5 extended controls (section definition, fields,
-                    // etc.) occupy 16 bytes in the para-text stream: the
-                    // WCHAR control marker plus 14 payload bytes. Consuming
-                    // the payload prevents its control IDs from being read as
-                    // gibberish text. Hancom's format guide identifies code
-                    // 2 as the section/column-definition control.
-                    i += 14;
-                    break;
-                case '\t':
-                    sb.Append('\t');
-                    break;
-                case >= ' ':
-                    sb.Append(value);
-                    break;
-                // Other controls are omitted until their record-specific
-                // payloads are implemented (tables, fields, drawings).
+                    offset += sizeof(char);
+                    continue;
             }
+
+            // Every other code in 0x01..0x17 is an INLINE or EXTENDED
+            // control and occupies eight WCHARs (16 bytes), including TAB
+            // (0x09), table/drawing (0x0B), fields, notes and headers.
+            const int controlByteLength = 8 * sizeof(char);
+            if (offset + controlByteLength > payload.Length)
+            {
+                warnings.Add(
+                    $"{sectionPath}: HWP5 PARA_TEXT 제어문자 0x{(int)value:X2}의 " +
+                    "8-WCHAR payload가 잘렸습니다.");
+                break;
+            }
+
+            if (value == '\t')
+                sb.Append('\t');
+            offset += controlByteLength;
         }
         return sb.ToString();
     }

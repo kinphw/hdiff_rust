@@ -33,6 +33,9 @@ internal sealed record HdiffThemePalette(
     Color ButtonBack,
     Color ButtonText,
     Color ButtonBorder,
+    Color PrimaryActionBack,
+    Color PrimaryActionHover,
+    Color PrimaryActionText,
     Color BadgeBack);
 
 internal static class HdiffThemes
@@ -63,6 +66,9 @@ internal static class HdiffThemes
         ButtonBack: Color.FromArgb(250, 250, 250),
         ButtonText: Color.FromArgb(35, 39, 47),
         ButtonBorder: Color.FromArgb(180, 188, 199),
+        PrimaryActionBack: Color.FromArgb(32, 103, 178),
+        PrimaryActionHover: Color.FromArgb(23, 83, 150),
+        PrimaryActionText: Color.White,
         BadgeBack: Color.FromArgb(238, 246, 255));
 
     public static readonly HdiffThemePalette RustDark = new(
@@ -91,6 +97,9 @@ internal static class HdiffThemes
         ButtonBack: Color.FromArgb(30, 41, 59),
         ButtonText: Color.FromArgb(248, 250, 252),
         ButtonBorder: Color.FromArgb(71, 85, 105),
+        PrimaryActionBack: Color.FromArgb(37, 99, 235),
+        PrimaryActionHover: Color.FromArgb(29, 78, 216),
+        PrimaryActionText: Color.FromArgb(248, 250, 252),
         BadgeBack: Color.FromArgb(25, 49, 82));
 
     public static HdiffThemePalette Get(HdiffThemeKind theme) => theme == HdiffThemeKind.RustDark ? RustDark : Light;

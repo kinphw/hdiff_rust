@@ -39,6 +39,35 @@ Hwp5FixtureWriter.Write(spacedHwp, "제1조 목적", "", "제2조 적용");
 var parsedSpacedHwp = reader.Read(spacedHwp);
 Expect(parsedSpacedHwp.Blocks.Select(x => x.Text).SequenceEqual(new[] { "제1조 목적", "", "제2조 적용" }), "HWP5의 빈 문단은 표시 옵션을 위해 보존해야 합니다.");
 
+var controlledHwp = Path.Combine(fixtureDir, "inline-controls-synthetic-hwp5.hwp");
+Hwp5FixtureWriter.WriteParaTextPayloads(
+    controlledHwp,
+    ParaTextPayload(
+        Utf16("표 앞"),
+        ExtendedControl(0x0B, "표오염문자노출"),
+        Utf16("표 뒤")),
+    ParaTextPayload(
+        Utf16("탭 앞"),
+        ExtendedControl(0x09, "탭오염문자노출"),
+        Utf16("탭 뒤")),
+    ParaTextPayload(
+        Utf16("문자제어 앞"),
+        CharControl(0x18),
+        Utf16("문자제어 뒤")),
+    ParaTextPayload(
+        Utf16("잘린 제어 앞"),
+        TruncatedExtendedControl(0x0B)));
+var parsedControlledHwp = reader.Read(controlledHwp);
+Expect(parsedControlledHwp.Blocks.Select(x => x.Text).SequenceEqual(new[]
+{
+    "표 앞표 뒤",
+    "탭 앞\t탭 뒤",
+    "문자제어 앞문자제어 뒤",
+    "잘린 제어 앞",
+}), "HWP5 8-WCHAR 인라인/확장 제어 payload가 본문으로 누출되지 않아야 합니다.");
+Expect(parsedControlledHwp.Warnings.Any(warning => warning.Contains("0x0B", StringComparison.Ordinal)),
+    "잘린 HWP5 8-WCHAR 제어 payload는 파서 경고로 보고해야 합니다.");
+
 var diff = new DocumentDiffer().Compare(before, after);
 Expect(diff.Summary.HasChanges, "전/후 HWP5 차이를 감지해야 합니다.");
 Expect(diff.ToGitLog().Contains("평가기간은 5년으로 한다.", StringComparison.Ordinal), "Git 로그에 변경 전 문장이 있어야 합니다.");
@@ -127,6 +156,42 @@ static void WriteHwpx(string path, params string[] paragraphs)
     foreach (var paragraph in paragraphs)
         writer.Write($"<hp:p><hp:run><hp:t>{System.Security.SecurityElement.Escape(paragraph)}</hp:t></hp:run></hp:p>");
     writer.Write("</hp:sec>");
+}
+
+static byte[] ParaTextPayload(params byte[][] parts)
+{
+    var length = parts.Sum(part => part.Length);
+    var result = new byte[length];
+    var offset = 0;
+    foreach (var part in parts)
+    {
+        Buffer.BlockCopy(part, 0, result, offset, part.Length);
+        offset += part.Length;
+    }
+    return result;
+}
+
+static byte[] Utf16(string text) => Encoding.Unicode.GetBytes(text);
+
+static byte[] ExtendedControl(ushort code, string sevenPayloadCharacters)
+{
+    if (sevenPayloadCharacters.Length != 7)
+        throw new ArgumentException("8-WCHAR 제어문자 테스트 payload는 후속 문자가 정확히 7개여야 합니다.", nameof(sevenPayloadCharacters));
+
+    var result = new byte[8 * sizeof(char)];
+    BitConverter.GetBytes(code).CopyTo(result, 0);
+    Encoding.Unicode.GetBytes(sevenPayloadCharacters).CopyTo(result, sizeof(char));
+    return result;
+}
+
+static byte[] CharControl(ushort code) => BitConverter.GetBytes(code);
+
+static byte[] TruncatedExtendedControl(ushort code)
+{
+    var result = new byte[2 * sizeof(char)];
+    BitConverter.GetBytes(code).CopyTo(result, 0);
+    Encoding.Unicode.GetBytes("누").CopyTo(result, sizeof(char));
+    return result;
 }
 
 [SupportedOSPlatform("windows")]

@@ -21,8 +21,25 @@ public static class Hwp5FixtureWriter
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (paragraphs.Length == 0) throw new ArgumentException("문단이 하나 이상 필요합니다.", nameof(paragraphs));
 
+        WriteParaTextPayloads(
+            path,
+            paragraphs.Select(paragraph => Encoding.Unicode.GetBytes(paragraph ?? string.Empty)).ToArray());
+    }
+
+    /// <summary>
+    /// Writes raw HWPTAG_PARA_TEXT payloads for byte-level parser regression tests.
+    /// Each payload must contain complete UTF-16LE WCHAR data.
+    /// </summary>
+    public static void WriteParaTextPayloads(string path, params byte[][] paragraphPayloads)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (paragraphPayloads.Length == 0)
+            throw new ArgumentException("문단 payload가 하나 이상 필요합니다.", nameof(paragraphPayloads));
+        if (paragraphPayloads.Any(payload => payload is null || payload.Length % sizeof(char) != 0))
+            throw new ArgumentException("문단 payload는 완전한 UTF-16LE WCHAR 배열이어야 합니다.", nameof(paragraphPayloads));
+
         var fileHeader = CreateFileHeader();
-        var section = CreateSection(paragraphs);
+        var section = CreateSection(paragraphPayloads);
         var fileHeaderMiniCount = DivRoundUp(fileHeader.Length, MiniSectorSize);
         var sectionMiniStart = fileHeaderMiniCount;
         var sectionMiniCount = DivRoundUp(section.Length, MiniSectorSize);
@@ -75,16 +92,17 @@ public static class Hwp5FixtureWriter
         return result;
     }
 
-    private static byte[] CreateSection(IEnumerable<string> paragraphs)
+    private static byte[] CreateSection(IEnumerable<byte[]> paragraphPayloads)
     {
         using var ms = new MemoryStream();
-        foreach (var paragraph in paragraphs)
+        foreach (var paraText in paragraphPayloads)
         {
-            var text = paragraph ?? string.Empty;
             var paraHeader = new byte[22];
-            BinaryPrimitives.WriteUInt32LittleEndian(paraHeader.AsSpan(0, 4), checked((uint)text.Length));
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                paraHeader.AsSpan(0, 4),
+                checked((uint)(paraText.Length / sizeof(char))));
             WriteRecord(ms, tag: 66, level: 0, payload: paraHeader);
-            WriteRecord(ms, tag: 67, level: 1, payload: Encoding.Unicode.GetBytes(text));
+            WriteRecord(ms, tag: 67, level: 1, payload: paraText);
         }
         return ms.ToArray();
     }

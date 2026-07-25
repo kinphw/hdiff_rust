@@ -38,16 +38,31 @@ internal static class HdiffUserSettings
     public static void SaveShowRowSeparators(bool show)
         => Save(Load() with { ShowRowSeparators = show });
 
+    public static bool LoadWrapLongLines() => Load().WrapLongLines ?? true;
+
+    public static void SaveWrapLongLines(bool wrap)
+        => Save(Load() with { WrapLongLines = wrap });
+
+    public static bool LoadIgnoreWhitespaceChanges() => Load().IgnoreWhitespaceChanges ?? true;
+
+    public static void SaveIgnoreWhitespaceChanges(bool ignore)
+        => Save(Load() with { IgnoreWhitespaceChanges = ignore });
+
+    public static bool LoadIgnoreBlankLines() => Load().IgnoreBlankLines ?? true;
+
+    public static void SaveIgnoreBlankLines(bool ignore)
+        => Save(Load() with { IgnoreBlankLines = ignore });
+
     private static Settings Load()
     {
         try
         {
-            if (!File.Exists(SettingsPath)) return new Settings(null, null, null);
-            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? new Settings(null, null, null);
+            if (!File.Exists(SettingsPath)) return EmptySettings();
+            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? EmptySettings();
         }
         catch
         {
-            return new Settings(null, null, null);
+            return EmptySettings();
         }
     }
 
@@ -66,5 +81,13 @@ internal static class HdiffUserSettings
         }
     }
 
-    private sealed record Settings(string? DiffFontSize, string? Theme, bool? ShowRowSeparators);
+    private static Settings EmptySettings() => new(null, null, null, null, null, null);
+
+    private sealed record Settings(
+        string? DiffFontSize,
+        string? Theme,
+        bool? ShowRowSeparators,
+        bool? WrapLongLines,
+        bool? IgnoreWhitespaceChanges,
+        bool? IgnoreBlankLines);
 }

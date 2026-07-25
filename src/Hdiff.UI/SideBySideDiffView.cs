@@ -28,6 +28,8 @@ internal sealed class SideBySideDiffView : UserControl
     private DocumentDiff? _lastDiff;
     private bool _wrapLongLines = true;
     private bool _reflowQueued;
+    private int _verticalMaximumRow;
+    private int _visibleVisualRowCount = 1;
     private int _oldTextWidth;
     private int _newTextWidth;
     private HdiffThemePalette _theme = HdiffThemes.Light;
@@ -248,8 +250,12 @@ internal sealed class SideBySideDiffView : UserControl
 
     private void ConfigureScrollBars()
     {
-        var contentHeight = _visualRows.Count * _canvas.RowHeight;
-        ConfigureScrollBar(_verticalScroll, contentHeight - _canvas.ClientSize.Height, _canvas.ClientSize.Height, _canvas.RowHeight);
+        // Use visual-row units rather than pixels. WinForms ScrollBar's
+        // Maximum/LargeChange convention is easy to get wrong in pixels and
+        // could leave the final report rows outside the reachable range.
+        _visibleVisualRowCount = Math.Max(1, _canvas.ClientSize.Height / _canvas.RowHeight);
+        _verticalMaximumRow = Math.Max(0, _visualRows.Count - _visibleVisualRowCount);
+        ConfigureScrollBar(_verticalScroll, _verticalMaximumRow, _visibleVisualRowCount, 1);
 
         _horizontalScroll.Visible = !_wrapLongLines;
         if (_wrapLongLines)
@@ -277,7 +283,7 @@ internal sealed class SideBySideDiffView : UserControl
 
     private void UpdateCanvasScroll()
     {
-        _canvas.ScrollOffset = _verticalScroll.Value;
+        _canvas.ScrollOffset = _verticalScroll.Value * _canvas.RowHeight;
         _canvas.HorizontalOffset = _horizontalScroll.Visible ? _horizontalScroll.Value : 0;
         UpdateOverviewViewports();
         _canvas.Invalidate();
@@ -286,21 +292,20 @@ internal sealed class SideBySideDiffView : UserControl
     private void CanvasMouseWheel(object? sender, MouseEventArgs e)
     {
         var scrollLines = SystemInformation.MouseWheelScrollLines;
-        var lineCount = scrollLines == -1 ? Math.Max(1, _verticalScroll.LargeChange / _canvas.RowHeight) : Math.Max(1, scrollLines);
+        var lineCount = scrollLines == -1 ? _visibleVisualRowCount : Math.Max(1, scrollLines);
         var steps = Math.Max(1, Math.Abs(e.Delta) / SystemInformation.MouseWheelScrollDelta);
-        SetVerticalScrollValue(_verticalScroll.Value + ((e.Delta > 0 ? -1 : 1) * steps * lineCount * _canvas.RowHeight));
+        SetVerticalScrollValue(_verticalScroll.Value + ((e.Delta > 0 ? -1 : 1) * steps * lineCount));
     }
 
     private void ScrollToDiffRow(int diffRow)
     {
         if (!_diffRowToFirstVisualLine.TryGetValue(diffRow, out var visualRow)) return;
-        SetVerticalScrollValue(visualRow * _canvas.RowHeight);
+        SetVerticalScrollValue(visualRow);
     }
 
     private void SetVerticalScrollValue(int value)
     {
-        var maximum = Math.Max(0, _verticalScroll.Maximum - _verticalScroll.LargeChange + 1);
-        var clamped = Math.Clamp(value, 0, maximum);
+        var clamped = Math.Clamp(value, 0, _verticalMaximumRow);
         if (_verticalScroll.Value == clamped) UpdateCanvasScroll();
         else _verticalScroll.Value = clamped;
     }
@@ -308,16 +313,15 @@ internal sealed class SideBySideDiffView : UserControl
     private int GetCurrentDiffRow()
     {
         if (_visualRows.Count == 0) return 0;
-        var visualRow = Math.Clamp(_verticalScroll.Value / _canvas.RowHeight, 0, _visualRows.Count - 1);
+        var visualRow = Math.Clamp(_verticalScroll.Value, 0, _visualRows.Count - 1);
         return _visualRows[visualRow].DiffRowIndex;
     }
 
     private void UpdateOverviewViewports()
     {
         if (_visualRows.Count == 0) return;
-        var firstVisualRow = Math.Clamp(_verticalScroll.Value / _canvas.RowHeight, 0, _visualRows.Count - 1);
-        var visibleRows = Math.Max(1, (_canvas.ClientSize.Height / _canvas.RowHeight) + 1);
-        var lastVisualRow = Math.Clamp(firstVisualRow + visibleRows - 1, 0, _visualRows.Count - 1);
+        var firstVisualRow = Math.Clamp(_verticalScroll.Value, 0, _visualRows.Count - 1);
+        var lastVisualRow = Math.Clamp(firstVisualRow + _visibleVisualRowCount - 1, 0, _visualRows.Count - 1);
         var firstDiffRow = _visualRows[firstVisualRow].DiffRowIndex;
         var lastDiffRow = _visualRows[lastVisualRow].DiffRowIndex;
         var visibleDiffRows = Math.Max(1, lastDiffRow - firstDiffRow + 1);
@@ -496,9 +500,23 @@ internal sealed class SideBySideDiffView : UserControl
 
             var gutter = new Rectangle(bounds.X, y, Math.Min(LineNumberWidth, bounds.Width), RowHeight);
             var lineText = lineNumber?.ToString() ?? string.Empty;
+            var markerBounds = new Rectangle(gutter.X, y, Math.Min(16, gutter.Width), RowHeight);
+            var numberBounds = Rectangle.FromLTRB(markerBounds.Right, y, gutter.Right - 2, y + RowHeight);
             using var gutterBrush = new SolidBrush(_theme.GutterBack);
             graphics.FillRectangle(gutterBrush, gutter);
-            TextRenderer.DrawText(graphics, lineText, Font, gutter, _theme.GutterText, TextFlags | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            var marker = GetChangeMarker(kind, oldSide, imaginary, lineNumber.HasValue);
+            if (marker is not null)
+            {
+                var markerColor = marker switch
+                {
+                    '+' => _theme.AddedText,
+                    '−' => _theme.RemovedText,
+                    _ => _theme.MutedText,
+                };
+                TextRenderer.DrawText(graphics, marker.Value.ToString(), Font, markerBounds, markerColor,
+                    TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+            TextRenderer.DrawText(graphics, lineText, Font, numberBounds, _theme.GutterText, TextFlags | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
             using var gutterPen = new Pen(_theme.Border);
             graphics.DrawLine(gutterPen, gutter.Right - 1, y + 2, gutter.Right - 1, y + RowHeight - 3);
 
@@ -510,10 +528,6 @@ internal sealed class SideBySideDiffView : UserControl
                 var x = textBounds.X - HorizontalOffset;
                 if (fragments.Count == 0)
                 {
-                    if (imaginary)
-                    {
-                        TextRenderer.DrawText(graphics, "·", Font, new Point(x, y + 2), _theme.MutedText, TextFlags);
-                    }
                     return;
                 }
 
@@ -539,6 +553,18 @@ internal sealed class SideBySideDiffView : UserControl
             InlineDiffFragmentKind.Added => (_theme.AddedText, _theme.AddedInlineBack),
             _ => (_theme.Text, lineBackColor),
         };
+
+        private static char? GetChangeMarker(DiffChangeKind kind, bool oldSide, bool imaginary, bool isFirstVisualLine)
+        {
+            if (imaginary || !isFirstVisualLine) return null;
+            return kind switch
+            {
+                DiffChangeKind.Deleted when oldSide => '−',
+                DiffChangeKind.Inserted when !oldSide => '+',
+                DiffChangeKind.Modified => '~',
+                _ => null,
+            };
+        }
 
         private Color GetLineBackColor(DiffChangeKind kind, bool oldSide) => kind switch
         {
