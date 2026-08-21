@@ -1,8 +1,12 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Diagnostics;
 using System.Reflection;
+using System.Text;
 using Hdiff.Core.Diff;
 using Hdiff.Core.Documents;
+using Hdiff.Core.Export;
+using Hdiff.Core.Review;
 using Hdiff.UI.Worker;
 
 namespace Hdiff.UI;
@@ -13,6 +17,8 @@ internal sealed class MainForm : Form
     private readonly DocumentDropCard _newFile = new("변경 후", Color.FromArgb(28, 132, 89)) { Dock = DockStyle.Fill };
     private readonly Button _compareButton = new() { Text = "비교", AutoSize = true };
     private readonly Button _swapButton = new() { Text = "전/후 바꿈", AutoSize = true };
+    private readonly Button _exportButton = new() { Text = "HTML 추출", AutoSize = true, Enabled = false };
+    private readonly Button _memoButton = new() { Text = "검토 메모", AutoSize = true, Enabled = false };
     private readonly Button _settingsButton = new() { AutoSize = false, Size = new Size(30, 26) };
     private readonly Button _aboutButton = new() { Text = "?", AutoSize = false, Size = new Size(28, 26), Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
     private readonly ComboBox _themePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 112 };
@@ -21,7 +27,9 @@ internal sealed class MainForm : Form
     private readonly CheckBox _ignoreBlankLines = new() { Text = "Ignore Blank Lines", Checked = true, AutoSize = true };
     private readonly CheckBox _wrapLongLines = new() { Text = "Word Wrap", Checked = true, AutoSize = true };
     private readonly CheckBox _rowSeparators = new() { Text = "Row Separators", Checked = false, AutoSize = true };
-    private readonly Label _summary = new() { AutoSize = true, Text = "전/후 HWP 또는 HWPX를 놓고 [비교]를 누르세요." };
+    private readonly CheckBox _textSelection = new() { Text = "Text Selection", Checked = true, AutoSize = true };
+    private readonly CheckBox _includeMemos = new() { Text = "Include Memos", Checked = false, AutoSize = true };
+    private readonly Label _summary = new() { AutoSize = true, Text = "전/후 문서를 놓거나 직접 입력하면 자동으로 비교합니다." };
     private readonly Label _modifiedChip = CreateSummaryChip();
     private readonly Label _insertedChip = CreateSummaryChip();
     private readonly Label _deletedChip = CreateSummaryChip();
@@ -35,6 +43,8 @@ internal sealed class MainForm : Form
         WrapContents = false,
     };
     private readonly SideBySideDiffView _diffView = new() { Dock = DockStyle.Fill, WrapLongLines = true };
+    private readonly DiffMemoListPanel _memoPanel = new();
+    private readonly DiffMemoStore _memoStore = new();
     private readonly ToolTip _toolTip = new();
     private readonly Icon? _applicationIcon = LoadApplicationIcon();
     private readonly TableLayoutPanel _sources;
@@ -42,8 +52,18 @@ internal sealed class MainForm : Form
     private readonly Panel _summaryPanel;
     private ParsedDocument? _oldPreview;
     private ParsedDocument? _newPreview;
+    private DocumentSource? _oldPreviewSource;
+    private DocumentSource? _newPreviewSource;
     private Task<ParsedDocument?>? _oldPreviewTask;
     private Task<ParsedDocument?>? _newPreviewTask;
+    private DocumentSource? _oldPreviewTaskSource;
+    private DocumentSource? _newPreviewTaskSource;
+    private CancellationTokenSource? _automaticCompareCancellation;
+    private int _comparisonRevision;
+    private int _comparisonRunId;
+    private DocumentDiff? _currentDiff;
+    private (DocumentSource? Old, DocumentSource? New)? _memoSourcePair;
+    private string _memoAuthor = Environment.UserName;
 
     private static readonly DiffFontSizeOption[] FontSizeOptions =
     {
@@ -60,7 +80,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Hdiff — HWP/HWPX 변경 비교";
+        Text = "Hdiff";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(980, 640);
         Size = new Size(1280, 820);
@@ -75,11 +95,14 @@ internal sealed class MainForm : Form
         _toolTip.SetToolTip(_ignoreBlankLines, "내용 없는 문단은 비교 행과 변경 요약에서 제외합니다. 체크를 풀면 원래 빈 문단도 표시합니다.");
         _toolTip.SetToolTip(_wrapLongLines, "VS Code의 Alt+Z처럼 긴 문단을 다음 표시 줄로 이어 보여 줍니다.");
         _toolTip.SetToolTip(_rowSeparators, "각 비교 행 아래에 옅은 구분선을 표시합니다. 기본값은 해제입니다.");
+        _toolTip.SetToolTip(_textSelection, "비교 본문을 마우스로 선택하고 Ctrl+C로 복사할 수 있습니다.");
+        _toolTip.SetToolTip(_exportButton, "현재 비교 화면을 오프라인 공유용 단일 HTML 파일로 저장합니다. 검토 메모도 함께 담깁니다.");
+        _toolTip.SetToolTip(_memoButton, "검토 메모 목록을 열고 닫습니다. 비교 행에서 마우스 오른쪽 클릭 또는 Ctrl+M으로 메모를 답니다.");
         _toolTip.SetToolTip(_settingsButton, "설정");
         _toolTip.SetToolTip(_aboutButton, "Hdiff 정보");
         _settingsButton.Paint += PaintSettingsGlyph;
-        _oldFile.FileChanged += (_, _) => HandleFileChanged(_oldFile, oldSide: true);
-        _newFile.FileChanged += (_, _) => HandleFileChanged(_newFile, oldSide: false);
+        _oldFile.SourceChanged += (_, _) => HandleSourceChanged(_oldFile, oldSide: true);
+        _newFile.SourceChanged += (_, _) => HandleSourceChanged(_newFile, oldSide: false);
 
         _sources = new TableLayoutPanel { Dock = DockStyle.Top, Height = 112, Padding = new Padding(12, 8, 12, 8), ColumnCount = 2, RowCount = 1 };
         _sources.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -113,11 +136,18 @@ internal sealed class MainForm : Form
         _actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _compareButton.Click += async (_, _) => await CompareAsync();
+        _compareButton.Click += async (_, _) =>
+        {
+            CancelScheduledAutomaticCompare();
+            await CompareAsync();
+        };
         _swapButton.Click += (_, _) => SwapFiles();
+        _exportButton.Click += async (_, _) => await ExportHtmlAsync();
+        _memoButton.Click += (_, _) => ShowMemoPanel(!_memoPanel.Visible);
         _settingsButton.Click += (_, _) => ShowSettings();
         _aboutButton.Click += (_, _) => ShowAbout();
-        primaryActions.Controls.AddRange(new Control[] { _compareButton, _swapButton });
+        ConfigureMemoSurfaces();
+        primaryActions.Controls.AddRange(new Control[] { _compareButton, _swapButton, _exportButton, _memoButton });
         utilityActions.Controls.AddRange(new Control[] { _settingsButton, _aboutButton });
         _actions.Controls.Add(primaryActions, 0, 0);
         _actions.Controls.Add(utilityActions, 1, 0);
@@ -127,7 +157,10 @@ internal sealed class MainForm : Form
         _summaryPanel.Controls.Add(_summary);
         _summaryPanel.Controls.Add(_summaryChips);
 
+        // Added before the top-docked strips so the filling comparison view is
+        // laid out last and keeps whatever the memo pane leaves.
         Controls.Add(_diffView);
+        Controls.Add(_memoPanel);
         Controls.Add(_summaryPanel);
         Controls.Add(_actions);
         Controls.Add(_sources);
@@ -138,6 +171,7 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            CancelScheduledAutomaticCompare();
             _toolTip.Dispose();
             _applicationIcon?.Dispose();
         }
@@ -146,36 +180,219 @@ internal sealed class MainForm : Form
 
     private async Task CompareAsync()
     {
-        if (!ValidatePath(_oldFile.FilePath, "변경 전") || !ValidatePath(_newFile.FilePath, "변경 후")) return;
+        var oldSource = _oldFile.Source;
+        var newSource = _newFile.Source;
+        if (!ValidateSource(oldSource, "변경 전") || !ValidateSource(newSource, "변경 후")) return;
+        var revision = _comparisonRevision;
+        var runId = ++_comparisonRunId;
         _compareButton.Enabled = false;
+        _currentDiff = null;
+        _exportButton.Enabled = false;
         SetSummaryMessage("파서 워커에서 전/후 문서를 읽는 중…");
         _diffView.Clear();
 
         try
         {
-            var oldDoc = await GetDocumentForComparisonAsync(_oldFile, oldSide: true);
-            var newDoc = await GetDocumentForComparisonAsync(_newFile, oldSide: false);
+            var oldDoc = await GetDocumentForComparisonAsync(_oldFile, oldSide: true, oldSource!);
+            if (!IsCurrentComparison(runId, revision, oldSource!, newSource!)) return;
+            var newDoc = await GetDocumentForComparisonAsync(_newFile, oldSide: false, newSource!);
+            if (!IsCurrentComparison(runId, revision, oldSource!, newSource!)) return;
             var diff = new DocumentDiffer().Compare(
                 oldDoc,
                 newDoc,
                 ignoreWhitespace: _ignoreWhitespace.Checked,
                 useGoogleDmpSemanticCleanup: true,
                 ignoreBlankLines: _ignoreBlankLines.Checked);
+            if (!IsCurrentComparison(runId, revision, oldSource!, newSource!)) return;
             _oldFile.SetParsedDetails(oldDoc);
             _newFile.SetParsedDetails(newDoc);
             _diffView.SetDiff(diff);
+            _currentDiff = diff;
+            _exportButton.Enabled = true;
+            AdoptMemosFor(diff, oldSource!, newSource!);
             ShowDiffSummary(diff, oldDoc, newDoc);
         }
         catch (Exception ex)
         {
+            if (!IsCurrentComparison(runId, revision, oldSource!, newSource!)) return;
             SetSummaryMessage("비교하지 못했습니다.");
             MessageBox.Show(this, ex.Message, "Hdiff", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         finally
         {
-            _compareButton.Enabled = true;
+            if (_comparisonRunId == runId) _compareButton.Enabled = true;
         }
     }
+
+    private void ConfigureMemoSurfaces()
+    {
+        _diffView.MemoAddRequested += (_, target) => AddMemo(target);
+        _diffView.MemoOpenRequested += (_, target) => OpenMemosForCell(target);
+        _memoStore.Changed += (_, _) => RefreshMemoSurfaces();
+        _memoPanel.MemoActivated += (_, id) => NavigateToMemo(id);
+        _memoPanel.EditRequested += (_, id) => EditMemo(id);
+        _memoPanel.DeleteRequested += (_, id) => DeleteMemo(id);
+        _memoPanel.CloseRequested += (_, _) => ShowMemoPanel(false);
+        RefreshMemoSurfaces();
+    }
+
+    /// <summary>
+    /// Keeps memos across a re-comparison of the same pair, because comparison
+    /// options are toggled mid-review. A different document pair starts a new
+    /// review, so its memos would be meaningless.
+    /// </summary>
+    private void AdoptMemosFor(DocumentDiff diff, DocumentSource oldSource, DocumentSource newSource)
+    {
+        var pair = (Old: (DocumentSource?)oldSource, New: (DocumentSource?)newSource);
+        if (_memoSourcePair is null || _memoSourcePair.Value != pair)
+        {
+            _memoSourcePair = pair;
+            _memoStore.Clear();
+        }
+        else
+        {
+            _memoStore.Reanchor(diff);
+        }
+        RefreshMemoSurfaces();
+    }
+
+    private void RefreshMemoSurfaces()
+    {
+        _diffView.SetMemoCounts(_currentDiff is null
+            ? new Dictionary<int, (int, int)>()
+            : _memoStore.CountByRowSide());
+        _memoPanel.SetMemos(BuildMemoRows());
+        _memoButton.Text = _memoStore.Count == 0 ? "검토 메모" : $"검토 메모 {_memoStore.Count}";
+        _memoButton.Enabled = _currentDiff is not null;
+    }
+
+    private IReadOnlyList<DiffMemoRow> BuildMemoRows()
+    {
+        if (_currentDiff is null) return Array.Empty<DiffMemoRow>();
+        return _memoStore.Memos
+            .Select((memo, index) => new DiffMemoRow(
+                memo.Id,
+                index + 1,
+                memo.Anchor.Kind,
+                memo.Anchor.Side,
+                memo.Anchor.IsOrphaned ? string.Empty : DescribeRowPosition(_currentDiff.Rows[memo.Anchor.RowIndex]),
+                memo.Anchor.Quote,
+                memo.Text,
+                memo.Author,
+                memo.LastEditedAt.ToString("yyyy-MM-dd HH:mm"),
+                memo.Anchor.IsOrphaned))
+            .ToArray();
+    }
+
+    private void ShowMemoPanel(bool show)
+    {
+        _memoPanel.Visible = show;
+        if (show) _memoPanel.BringToFront();
+    }
+
+    private void AddMemo(SideBySideDiffView.DiffMemoTarget target)
+    {
+        if (_currentDiff is null || target.RowIndex < 0 || target.RowIndex >= _currentDiff.Rows.Count) return;
+        var row = _currentDiff.Rows[target.RowIndex];
+        var side = DiffMemoAnchor.ResolveSide(row, target.Side);
+        using var dialog = new DiffMemoEditorDialog(
+            DescribeRowCaption(row, side),
+            (side == DiffMemoSide.Old ? row.OldText : row.NewText) ?? string.Empty,
+            _memoAuthor,
+            string.Empty,
+            editing: false,
+            CurrentTheme());
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        _memoAuthor = dialog.Author;
+        var memo = _memoStore.Add(_currentDiff, target.RowIndex, side, dialog.Author, dialog.MemoText, DateTimeOffset.Now);
+        ShowMemoPanel(true);
+        _memoPanel.SelectMemo(memo.Id);
+        NavigateToMemo(memo.Id);
+    }
+
+    private void EditMemo(string id)
+    {
+        if (_currentDiff is null || _memoStore.Find(id) is not { } memo) return;
+        using var dialog = new DiffMemoEditorDialog(
+            memo.Anchor.IsOrphaned
+                ? "이 문단은 현재 비교 결과에 없습니다."
+                : DescribeRowCaption(_currentDiff.Rows[memo.Anchor.RowIndex], memo.Anchor.Side),
+            memo.Anchor.Quote,
+            memo.Author,
+            memo.Text,
+            editing: true,
+            CurrentTheme());
+
+        var result = dialog.ShowDialog(this);
+        if (result == DialogResult.Abort)
+        {
+            DeleteMemo(id, confirm: false);
+            return;
+        }
+        if (result != DialogResult.OK) return;
+
+        _memoAuthor = dialog.Author;
+        _memoStore.Update(id, dialog.Author, dialog.MemoText, DateTimeOffset.Now);
+        _memoPanel.SelectMemo(id);
+    }
+
+    private void DeleteMemo(string id, bool confirm = true)
+    {
+        if (_memoStore.Find(id) is null) return;
+        if (confirm && MessageBox.Show(this, "선택한 검토 메모를 삭제할까요?", "Hdiff",
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        _memoStore.Remove(id);
+    }
+
+    private void OpenMemosForCell(SideBySideDiffView.DiffMemoTarget target)
+    {
+        var memos = _memoStore.ForRow(target.RowIndex)
+            .Where(memo => memo.Anchor.Side == target.Side)
+            .ToArray();
+        if (memos.Length == 0) return;
+        ShowMemoPanel(true);
+        _memoPanel.SelectMemo(memos[0].Id);
+        _diffView.PinnedDiffRow = target.RowIndex;
+    }
+
+    private void NavigateToMemo(string id)
+    {
+        if (_memoStore.Find(id) is not { } memo || memo.Anchor.IsOrphaned)
+        {
+            _diffView.PinnedDiffRow = null;
+            return;
+        }
+        // The pin stays while the memo stays selected, so the list row and the
+        // paragraph on screen visibly belong together.
+        _diffView.PinnedDiffRow = memo.Anchor.RowIndex;
+        _diffView.RevealDiffRow(memo.Anchor.RowIndex);
+    }
+
+    private HdiffThemePalette CurrentTheme() =>
+        HdiffThemes.Get(((DiffThemeOption)_themePicker.SelectedItem!).Theme);
+
+    private static string DescribeRowCaption(DiffRow row, DiffMemoSide side)
+    {
+        var kind = row.Kind switch
+        {
+            DiffChangeKind.Inserted => "추가",
+            DiffChangeKind.Deleted => "삭제",
+            DiffChangeKind.Modified => "수정",
+            _ => "동일",
+        };
+        var column = side == DiffMemoSide.Old ? "변경 전" : "변경 후";
+        return $"{column} · {kind} · {DescribeRowPosition(row)}";
+    }
+
+    private static string DescribeRowPosition(DiffRow row) =>
+        $"문단 {row.OldLine?.ToString() ?? "–"} → {row.NewLine?.ToString() ?? "–"}";
+
+    private bool IsCurrentComparison(int runId, int revision, DocumentSource oldSource, DocumentSource newSource) =>
+        _comparisonRunId == runId
+        && _comparisonRevision == revision
+        && Equals(_oldFile.Source, oldSource)
+        && Equals(_newFile.Source, newSource);
 
     private static string FormatDocumentStats(ParsedDocument document) => $"{document.Blocks.Sum(block => block.Text.Length):N0}자 · {document.Blocks.Count:N0}문단";
 
@@ -217,7 +434,10 @@ internal sealed class MainForm : Form
         _wrapLongLines.Checked = HdiffUserSettings.LoadWrapLongLines();
         _ignoreWhitespace.Checked = HdiffUserSettings.LoadIgnoreWhitespaceChanges();
         _ignoreBlankLines.Checked = HdiffUserSettings.LoadIgnoreBlankLines();
+        _textSelection.Checked = HdiffUserSettings.LoadTextSelectionEnabled();
+        _includeMemos.Checked = HdiffUserSettings.LoadIncludeMemos();
         _diffView.WrapLongLines = _wrapLongLines.Checked;
+        _diffView.TextSelectionEnabled = _textSelection.Checked;
 
         _wrapLongLines.CheckedChanged += (_, _) =>
         {
@@ -228,11 +448,23 @@ internal sealed class MainForm : Form
         {
             HdiffUserSettings.SaveIgnoreWhitespaceChanges(_ignoreWhitespace.Checked);
             ClearPreviousComparison();
+            ScheduleAutomaticCompare();
         };
         _ignoreBlankLines.CheckedChanged += (_, _) =>
         {
             HdiffUserSettings.SaveIgnoreBlankLines(_ignoreBlankLines.Checked);
             ClearPreviousComparison();
+            ScheduleAutomaticCompare();
+        };
+        _textSelection.CheckedChanged += (_, _) =>
+        {
+            _diffView.TextSelectionEnabled = _textSelection.Checked;
+            HdiffUserSettings.SaveTextSelectionEnabled(_textSelection.Checked);
+        };
+        _includeMemos.CheckedChanged += (_, _) =>
+        {
+            HdiffUserSettings.SaveIncludeMemos(_includeMemos.Checked);
+            RestartDocumentPreviews();
         };
     }
 
@@ -260,6 +492,8 @@ internal sealed class MainForm : Form
         _summary.ForeColor = theme.Text;
         ApplyPrimaryButtonTheme(_compareButton, theme);
         ApplyButtonTheme(_swapButton, theme);
+        ApplyButtonTheme(_exportButton, theme);
+        ApplyButtonTheme(_memoButton, theme);
         ApplyButtonTheme(_settingsButton, theme);
         ApplyButtonTheme(_aboutButton, theme);
         _summaryChips.BackColor = theme.SurfaceBack;
@@ -271,6 +505,7 @@ internal sealed class MainForm : Form
         _oldFile.ApplyTheme(theme);
         _newFile.ApplyTheme(theme);
         _diffView.ApplyTheme(theme);
+        _memoPanel.ApplyTheme(theme);
         if (persist) HdiffUserSettings.SaveThemeKey(option.Key);
     }
 
@@ -310,9 +545,9 @@ internal sealed class MainForm : Form
 
     private void SwapFiles()
     {
-        var oldPath = _oldFile.FilePath;
-        _oldFile.SetFile(_newFile.FilePath);
-        _newFile.SetFile(oldPath);
+        var oldSource = _oldFile.Source;
+        _oldFile.SetSource(_newFile.Source);
+        _newFile.SetSource(oldSource);
     }
 
     private void ShowSettings()
@@ -326,8 +561,10 @@ internal sealed class MainForm : Form
             Array.IndexOf(FontSizeOptions, currentFontSize),
             _wrapLongLines.Checked,
             _rowSeparators.Checked,
+            _textSelection.Checked,
             _ignoreWhitespace.Checked,
             _ignoreBlankLines.Checked,
+            _includeMemos.Checked,
             HdiffThemes.Get(currentTheme.Theme));
 
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -336,8 +573,10 @@ internal sealed class MainForm : Form
         _fontSize.SelectedItem = FontSizeOptions[dialog.SelectedFontSizeIndex];
         _wrapLongLines.Checked = dialog.WrapLongLines;
         _rowSeparators.Checked = dialog.ShowRowSeparators;
+        _textSelection.Checked = dialog.TextSelectionEnabled;
         _ignoreWhitespace.Checked = dialog.IgnoreWhitespaceChanges;
         _ignoreBlankLines.Checked = dialog.IgnoreBlankLines;
+        _includeMemos.Checked = dialog.IncludeMemos;
     }
 
     private static void PaintSettingsGlyph(object? sender, PaintEventArgs e)
@@ -366,22 +605,118 @@ internal sealed class MainForm : Form
 
     private void ShowAbout()
     {
+        var theme = ((DiffThemeOption)_themePicker.SelectedItem!).Theme;
+        using var dialog = new HdiffAboutDialog(GetApplicationVersion(), HdiffThemes.Get(theme));
+        dialog.ShowDialog(this);
+    }
+
+    private async Task ExportHtmlAsync()
+    {
+        var diff = _currentDiff;
+        if (diff is null)
+        {
+            MessageBox.Show(this, "먼저 전/후 문서를 비교해 주세요.", "Hdiff", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Hdiff 비교 결과 HTML 저장",
+            Filter = "HTML 파일 (*.html)|*.html",
+            DefaultExt = "html",
+            AddExtension = true,
+            RestoreDirectory = true,
+            FileName = CreateExportFileName(diff),
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        _exportButton.Enabled = false;
+        try
+        {
+            var fontOption = (DiffFontSizeOption)_fontSize.SelectedItem!;
+            var themeOption = (DiffThemeOption)_themePicker.SelectedItem!;
+            var html = HtmlDiffExporter.Create(diff, new HtmlDiffExportOptions(
+                FontSizePixels: (int)Math.Round(fontOption.Points * 96f / 72f),
+                WrapLongLines: _wrapLongLines.Checked,
+                ShowRowSeparators: _rowSeparators.Checked,
+                Theme: themeOption.Theme == HdiffThemeKind.RustDark ? HtmlDiffTheme.RustDark : HtmlDiffTheme.Light,
+                AppVersion: GetApplicationVersion(),
+                GeneratedAt: DateTimeOffset.Now),
+                _memoStore.Memos);
+            await File.WriteAllTextAsync(dialog.FileName, html, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            ShowHtmlExportCompleted(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"HTML을 저장하지 못했습니다.\n\n{ex.Message}", "Hdiff", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _exportButton.Enabled = _currentDiff is not null;
+        }
+    }
+
+    private void ShowHtmlExportCompleted(string filePath)
+    {
+        var openButton = new TaskDialogButton("열기");
+        var closeButton = new TaskDialogButton("종료");
+        var page = new TaskDialogPage
+        {
+            Caption = "Hdiff",
+            Heading = "비교 결과를 저장했습니다.",
+            Text = filePath,
+            Icon = TaskDialogIcon.Information,
+            AllowCancel = true,
+            SizeToContent = true,
+            DefaultButton = openButton,
+        };
+        page.Buttons.Add(openButton);
+        page.Buttons.Add(closeButton);
+
+        if (TaskDialog.ShowDialog(this, page) != openButton) return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(filePath) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"저장된 HTML을 열지 못했습니다.\n\n{ex.Message}",
+                "Hdiff",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private static string CreateExportFileName(DocumentDiff diff)
+    {
+        var oldName = Path.GetFileNameWithoutExtension(diff.OldDocument.SourcePath);
+        var newName = Path.GetFileNameWithoutExtension(diff.NewDocument.SourcePath);
+        var rawName = $"{oldName}_vs_{newName}";
+        var invalidCharacters = Path.GetInvalidFileNameChars();
+        var safeName = new string(rawName.Select(character => invalidCharacters.Contains(character) ? '_' : character).ToArray()).Trim();
+        if (safeName.Length > 120) safeName = safeName[..120].TrimEnd();
+        return (string.IsNullOrWhiteSpace(safeName) ? "Hdiff_비교결과" : safeName) + ".html";
+    }
+
+    private static string GetApplicationVersion()
+    {
         var version = typeof(MainForm).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? Application.ProductVersion;
-        version = version.Split('+')[0];
-        MessageBox.Show(
-            this,
-            $"Hdiff\n\n제작자: kinphw\nwww.github.com/hdiff\n버전: v{version}",
-            "About Hdiff",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+        return version.Split('+')[0];
     }
 
     private void ClearPreviousComparison()
     {
+        _currentDiff = null;
+        _exportButton.Enabled = false;
         _diffView.Clear();
-        SetSummaryMessage("파일이 바뀌었습니다. [비교]를 눌러 새 결과를 만드세요.");
+        RefreshMemoSurfaces();
+        SetSummaryMessage(_oldFile.HasSource && _newFile.HasSource
+            ? "변경 내용을 자동으로 비교하는 중…"
+            : "전/후 문서를 놓거나 직접 입력하면 자동으로 비교합니다.");
     }
 
     private void SetSummaryMessage(string message)
@@ -396,74 +731,184 @@ internal sealed class MainForm : Form
         _modifiedChip.Text = $"수정 {diff.Summary.Modified}";
         _insertedChip.Text = $"추가 {diff.Summary.Inserted}";
         _deletedChip.Text = $"삭제 {diff.Summary.Deleted}";
-        _summaryDetail.Text = $"전 {FormatDocumentStats(oldDocument)} → 후 {FormatDocumentStats(newDocument)}";
+        var detail = $"전 {FormatDocumentStats(oldDocument)} → 후 {FormatDocumentStats(newDocument)}";
+        var memoNotice = DescribeMemosInComparison(oldDocument, newDocument);
+        _summaryDetail.Text = memoNotice is null ? detail : $"{detail}  ·  {memoNotice}";
         _summary.Visible = false;
         _summaryChips.Visible = true;
     }
 
-    private void HandleFileChanged(DocumentDropCard card, bool oldSide)
+    /// <summary>
+    /// The COM fallback cannot separate memos from the body without editing
+    /// the document, so it reports them instead. Surface that here, otherwise
+    /// a comparison silently includes memo text the user asked to exclude.
+    /// </summary>
+    private static string? DescribeMemosInComparison(ParsedDocument oldDocument, ParsedDocument newDocument)
     {
+        var oldMemos = HwpComFallbackReader.CountMemosReported(oldDocument.Warnings);
+        var newMemos = HwpComFallbackReader.CountMemosReported(newDocument.Warnings);
+        if (oldMemos == 0 && newMemos == 0) return null;
+        return $"메모 제외 불가: 전 {oldMemos}건 · 후 {newMemos}건이 본문에 포함됨";
+    }
+
+    private void HandleSourceChanged(DocumentDropCard card, bool oldSide)
+    {
+        var source = card.Source;
+        var revision = ++_comparisonRevision;
         if (oldSide)
         {
             _oldPreview = null;
-            _oldPreviewTask = StartPreviewAsync(card, oldSide: true);
+            _oldPreviewSource = null;
+            _oldPreviewTaskSource = source;
+            _oldPreviewTask = StartPreviewAsync(card, oldSide: true, revision);
         }
         else
         {
             _newPreview = null;
-            _newPreviewTask = StartPreviewAsync(card, oldSide: false);
+            _newPreviewSource = null;
+            _newPreviewTaskSource = source;
+            _newPreviewTask = StartPreviewAsync(card, oldSide: false, revision);
         }
         ClearPreviousComparison();
+        ScheduleAutomaticCompare();
     }
 
-    private async Task<ParsedDocument?> StartPreviewAsync(DocumentDropCard card, bool oldSide)
+    private void RestartDocumentPreviews()
     {
-        var path = card.FilePath;
-        if (path is null) return null;
+        CancelScheduledAutomaticCompare();
+        var revision = ++_comparisonRevision;
+        var oldSource = _oldFile.Source;
+        var newSource = _newFile.Source;
+
+        _oldPreview = null;
+        _oldPreviewSource = null;
+        _oldPreviewTaskSource = oldSource;
+        _oldPreviewTask = oldSource is null ? null : StartPreviewAsync(_oldFile, oldSide: true, revision);
+
+        _newPreview = null;
+        _newPreviewSource = null;
+        _newPreviewTaskSource = newSource;
+        _newPreviewTask = newSource is null ? null : StartPreviewAsync(_newFile, oldSide: false, revision);
+
+        ClearPreviousComparison();
+        ScheduleAutomaticCompare();
+    }
+
+    private void ScheduleAutomaticCompare()
+    {
+        CancelScheduledAutomaticCompare();
+        if (!_oldFile.HasSource || !_newFile.HasSource) return;
+
+        var cancellation = new CancellationTokenSource();
+        _automaticCompareCancellation = cancellation;
+        _ = RunScheduledAutomaticCompareAsync(cancellation);
+    }
+
+    private async Task RunScheduledAutomaticCompareAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            // File swaps and settings acceptance can raise several events in
+            // succession. Wait briefly so only the final pair is compared.
+            await Task.Delay(250, cancellation.Token);
+            if (!cancellation.IsCancellationRequested) await CompareAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer file pair or comparison option superseded this request.
+        }
+        finally
+        {
+            if (ReferenceEquals(_automaticCompareCancellation, cancellation))
+                _automaticCompareCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelScheduledAutomaticCompare()
+    {
+        var cancellation = _automaticCompareCancellation;
+        _automaticCompareCancellation = null;
+        if (cancellation is null) return;
+        try { cancellation.Cancel(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task<ParsedDocument?> StartPreviewAsync(DocumentDropCard card, bool oldSide, int revision)
+    {
+        var source = card.Source;
+        if (source is null) return null;
+        var includeMemos = _includeMemos.Checked;
 
         card.SetParsingState();
         try
         {
-            var document = await Task.Run(() => new HwpWorkerClient().Read(path, allowComFallback: true));
-            if (!IsCurrentAttachment(card, path)) return null;
+            var document = await ReadSourceAsync(card, source, includeMemos);
+            if (_comparisonRevision != revision || !Equals(card.Source, source)) return null;
 
-            if (oldSide) _oldPreview = document;
-            else _newPreview = document;
+            if (oldSide)
+            {
+                _oldPreview = document;
+                _oldPreviewSource = source;
+            }
+            else
+            {
+                _newPreview = document;
+                _newPreviewSource = source;
+            }
             card.SetParsedDetails(document);
             return document;
         }
         catch (Exception ex)
         {
-            if (IsCurrentAttachment(card, path)) card.SetParseFailure(ex.Message);
+            if (_comparisonRevision == revision && Equals(card.Source, source))
+                card.SetParseFailure(ex.Message);
             return null;
         }
     }
 
-    private async Task<ParsedDocument> GetDocumentForComparisonAsync(DocumentDropCard card, bool oldSide)
+    private async Task<ParsedDocument> GetDocumentForComparisonAsync(DocumentDropCard card, bool oldSide, DocumentSource source)
     {
-        var path = card.FilePath!;
         var preview = oldSide ? _oldPreview : _newPreview;
-        if (IsPreviewForPath(preview, path)) return preview!;
+        var previewSource = oldSide ? _oldPreviewSource : _newPreviewSource;
+        if (preview is not null && Equals(previewSource, source)) return preview;
 
         var previewTask = oldSide ? _oldPreviewTask : _newPreviewTask;
-        if (previewTask is not null)
+        var previewTaskSource = oldSide ? _oldPreviewTaskSource : _newPreviewTaskSource;
+        if (previewTask is not null && Equals(previewTaskSource, source))
         {
             var previewResult = await previewTask;
-            if (IsPreviewForPath(previewResult, path)) return previewResult!;
+            if (previewResult is not null) return previewResult;
         }
 
-        var document = await Task.Run(() => new HwpWorkerClient().Read(path, allowComFallback: true));
-        if (oldSide) _oldPreview = document;
-        else _newPreview = document;
-        card.SetParsedDetails(document);
+        var document = await ReadSourceAsync(card, source, _includeMemos.Checked);
+        if (Equals(card.Source, source))
+        {
+            if (oldSide)
+            {
+                _oldPreview = document;
+                _oldPreviewSource = source;
+            }
+            else
+            {
+                _newPreview = document;
+                _newPreviewSource = source;
+            }
+            card.SetParsedDetails(document);
+        }
         return document;
     }
 
-    private static bool IsCurrentAttachment(DocumentDropCard card, string path) =>
-        string.Equals(card.FilePath, path, StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsPreviewForPath(ParsedDocument? document, string path) =>
-        document is not null && string.Equals(document.SourcePath, path, StringComparison.OrdinalIgnoreCase);
+    private static Task<ParsedDocument> ReadSourceAsync(
+        DocumentDropCard card,
+        DocumentSource source,
+        bool includeMemos) =>
+        source.Kind == DocumentSourceKind.DirectText
+            ? Task.FromResult(new PlainTextReader().ReadText($"{card.Caption} 직접 입력.md", source.Text ?? string.Empty, "직접 입력"))
+            : Task.Run(() => new HwpWorkerClient().Read(
+                source.FilePath!,
+                allowComFallback: true,
+                includeMemos));
 
     private static Icon? LoadApplicationIcon()
     {
@@ -473,11 +918,16 @@ internal sealed class MainForm : Form
         return (Icon)icon.Clone();
     }
 
-    private bool ValidatePath(string? path, string caption)
+    private bool ValidateSource(DocumentSource? source, string caption)
     {
-        if (path is null || !File.Exists(path))
+        if (source is null)
         {
-            MessageBox.Show(this, $"{caption} 파일을 선택하세요.", "Hdiff", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, $"{caption} 파일을 선택하거나 텍스트를 직접 입력하세요.", "Hdiff", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+        if (source.Kind == DocumentSourceKind.File && !File.Exists(source.FilePath))
+        {
+            MessageBox.Show(this, $"{caption} 파일을 찾을 수 없습니다.", "Hdiff", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
         return true;

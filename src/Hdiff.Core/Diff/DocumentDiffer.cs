@@ -21,6 +21,14 @@ public enum InlineDiffFragmentKind
     Added,
 }
 
+public enum DiffRowPresentationKind
+{
+    Normal,
+    SectionHeader,
+    Spacer,
+    TableRow,
+}
+
 public sealed record InlineDiffFragment(InlineDiffFragmentKind Kind, string Text);
 
 public sealed record DiffRow(
@@ -30,7 +38,8 @@ public sealed record DiffRow(
     int? NewLine,
     string? NewText,
     IReadOnlyList<InlineDiffFragment> OldFragments,
-    IReadOnlyList<InlineDiffFragment> NewFragments);
+    IReadOnlyList<InlineDiffFragment> NewFragments,
+    DiffRowPresentationKind Presentation);
 
 public sealed record DiffSummary(int Inserted, int Deleted, int Modified, int Unchanged)
 {
@@ -140,15 +149,80 @@ public sealed class DocumentDiffer
             newFragments = refinedNew;
         }
 
+        var presentation = GetPresentation(oldPiece?.Text, newPiece?.Text);
+        var oldDisplay = ToDisplaySide(oldPiece?.Text, oldFragments);
+        var newDisplay = ToDisplaySide(newPiece?.Text, newFragments);
+
         return new DiffRow(
             kind,
             oldPiece?.Position,
-            oldPiece?.Text,
+            oldDisplay.Text,
             newPiece?.Position,
-            newPiece?.Text,
-            oldFragments,
-            newFragments);
+            newDisplay.Text,
+            oldDisplay.Fragments,
+            newDisplay.Fragments,
+            presentation);
     }
+
+    private static DiffRowPresentationKind GetPresentation(string? oldText, string? newText)
+    {
+        if (HasPrefix(oldText, "[시트] ") || HasPrefix(newText, "[시트] "))
+            return DiffRowPresentationKind.SectionHeader;
+        if (oldText == "[표 영역]" || newText == "[표 영역]")
+            return DiffRowPresentationKind.Spacer;
+        if (HasPrefix(oldText, "[표] ") || HasPrefix(newText, "[표] "))
+            return DiffRowPresentationKind.TableRow;
+        return DiffRowPresentationKind.Normal;
+    }
+
+    private static DisplaySide ToDisplaySide(string? text, IReadOnlyList<InlineDiffFragment> fragments)
+    {
+        if (text is null) return new DisplaySide(null, fragments);
+
+        var prefixLength = text switch
+        {
+            _ when text.StartsWith("[시트] ", StringComparison.Ordinal) => "[시트] ".Length,
+            "[표 영역]" => text.Length,
+            _ when text.StartsWith("[표] ", StringComparison.Ordinal) => "[표] ".Length,
+            _ => 0,
+        };
+
+        if (prefixLength == 0) return new DisplaySide(text, fragments);
+        return new DisplaySide(text[prefixLength..], RemoveLeadingCharacters(fragments, prefixLength));
+    }
+
+    private static IReadOnlyList<InlineDiffFragment> RemoveLeadingCharacters(
+        IReadOnlyList<InlineDiffFragment> fragments,
+        int count)
+    {
+        if (count <= 0 || fragments.Count == 0) return fragments;
+
+        var result = new List<InlineDiffFragment>(fragments.Count);
+        var remaining = count;
+        foreach (var fragment in fragments)
+        {
+            if (remaining >= fragment.Text.Length)
+            {
+                remaining -= fragment.Text.Length;
+                continue;
+            }
+
+            var text = remaining > 0 ? fragment.Text[remaining..] : fragment.Text;
+            remaining = 0;
+            if (text.Length == 0) continue;
+
+            if (result.LastOrDefault() is { } previous && previous.Kind == fragment.Kind)
+                result[^1] = previous with { Text = previous.Text + text };
+            else
+                result.Add(fragment with { Text = text });
+        }
+        return result;
+    }
+
+    private static bool HasPrefix(string? text, string prefix) =>
+        text?.StartsWith(prefix, StringComparison.Ordinal) == true;
+
+    private sealed record DisplaySide(string? Text, IReadOnlyList<InlineDiffFragment> Fragments);
 
     private static IReadOnlyList<InlineDiffFragment> ToFragments(DiffPiece? piece, bool isOldSide)
     {

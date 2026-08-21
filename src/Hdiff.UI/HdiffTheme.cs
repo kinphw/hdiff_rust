@@ -36,7 +36,10 @@ internal sealed record HdiffThemePalette(
     Color PrimaryActionBack,
     Color PrimaryActionHover,
     Color PrimaryActionText,
-    Color BadgeBack);
+    Color BadgeBack,
+    Color MemoAccent,
+    Color MemoFlagText,
+    Color MemoSurfaceBack);
 
 internal static class HdiffThemes
 {
@@ -69,7 +72,10 @@ internal static class HdiffThemes
         PrimaryActionBack: Color.FromArgb(32, 103, 178),
         PrimaryActionHover: Color.FromArgb(23, 83, 150),
         PrimaryActionText: Color.White,
-        BadgeBack: Color.FromArgb(238, 246, 255));
+        BadgeBack: Color.FromArgb(238, 246, 255),
+        MemoAccent: Color.FromArgb(217, 119, 6),
+        MemoFlagText: Color.White,
+        MemoSurfaceBack: Color.FromArgb(255, 251, 235));
 
     public static readonly HdiffThemePalette RustDark = new(
         AppBack: Color.FromArgb(15, 23, 42),
@@ -100,7 +106,10 @@ internal static class HdiffThemes
         PrimaryActionBack: Color.FromArgb(37, 99, 235),
         PrimaryActionHover: Color.FromArgb(29, 78, 216),
         PrimaryActionText: Color.FromArgb(248, 250, 252),
-        BadgeBack: Color.FromArgb(25, 49, 82));
+        BadgeBack: Color.FromArgb(25, 49, 82),
+        MemoAccent: Color.FromArgb(245, 158, 11),
+        MemoFlagText: Color.FromArgb(31, 41, 55),
+        MemoSurfaceBack: Color.FromArgb(38, 33, 26));
 
     public static HdiffThemePalette Get(HdiffThemeKind theme) => theme == HdiffThemeKind.RustDark ? RustDark : Light;
 }

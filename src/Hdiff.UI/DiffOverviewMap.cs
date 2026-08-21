@@ -11,7 +11,7 @@ internal sealed record DiffOverviewLine(DiffChangeKind Kind, int TextLength, boo
 internal sealed class DiffOverviewMap : Control
 {
     private const int ChangeRailWidth = 6;
-    private const int MinimumChangeSignalHeight = 2;
+    private const int MinimumChangeSignalHeight = 1;
     private readonly bool _oldSide;
     private readonly ToolTip _toolTip = new();
     private IReadOnlyList<DiffOverviewLine> _lines = Array.Empty<DiffOverviewLine>();
@@ -88,9 +88,9 @@ internal sealed class DiffOverviewMap : Control
         e.Graphics.FillRectangle(viewportFill, 1, viewportTop, Math.Max(1, ClientSize.Width - 2), viewportHeight);
         e.Graphics.DrawRectangle(viewportBorder, 0, viewportTop, Math.Max(1, ClientSize.Width - 1), Math.Max(1, viewportHeight - 1));
 
-        // A literal one-row minimap mark disappears in a multi-thousand-row
-        // report. Draw a high-contrast, minimum-two-pixel rail after the
-        // viewport overlay so an isolated change remains discoverable.
+        // Draw a high-contrast rail after the viewport overlay. A one-pixel
+        // raster minimum keeps isolated changes discoverable without making
+        // them look as large as a genuinely multi-row change block.
         DrawChangeSignalRail(e.Graphics);
     }
 

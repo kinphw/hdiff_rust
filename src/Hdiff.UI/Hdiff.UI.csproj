@@ -13,6 +13,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Hdiff.Core\Hdiff.Core.csproj" />
+    <!-- PdfPig: Apache-2.0, pure managed PDF text extraction. The same
+         version is proven in DocMine's DRM-isolated PDF worker. -->
+    <PackageReference Include="PdfPig" Version="0.1.14" />
     <EmbeddedResource Include="..\..\assets\Hdiff.ico" LogicalName="Hdiff.ApplicationIcon" />
   </ItemGroup>
 </Project>

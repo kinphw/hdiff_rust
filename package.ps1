@@ -22,16 +22,18 @@ if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]*$') {
 }
 
 $flavor = 'fdd'
-$packageName = "Hdiff-v$version-win-x64-$flavor"
+# $packageName = "Hdiff-v$version-win-x64-$flavor"
+$packageName = "Hdiff-v$version"
 $publishDirectory = Join-Path $publishRoot $flavor
 $zipPath = Join-Path $publishRoot "$packageName.zip"
 $temporaryPublishDirectory = $false
 
 # Do not force an operator to close an already-running package just to produce a
-# newer ZIP. When the standard staging EXE is locked, publish into a controlled
-# temporary folder, create the ZIP, and remove that temporary folder afterwards.
-$existingExecutable = Join-Path $publishDirectory 'Hdiff.exe'
-if (Test-Path -LiteralPath $existingExecutable) {
+# newer ZIP. Hdiff.exe is the UI and python.exe is the identical PDF DRM worker;
+# either can be locked while the package is in use.
+foreach ($existingFileName in @('Hdiff.exe', 'python.exe')) {
+    $existingExecutable = Join-Path $publishDirectory $existingFileName
+    if (-not (Test-Path -LiteralPath $existingExecutable)) { continue }
     $lockProbe = $null
     try {
         $lockProbe = [System.IO.File]::Open(
@@ -44,6 +46,7 @@ if (Test-Path -LiteralPath $existingExecutable) {
         $publishDirectory = Join-Path $publishRoot ".staging-$packageName"
         $temporaryPublishDirectory = $true
         Write-Warning "The existing $flavor package is running. Building this ZIP from an isolated staging folder."
+        break
     }
     finally {
         if ($null -ne $lockProbe) { $lockProbe.Dispose() }
@@ -55,7 +58,7 @@ if (Test-Path -LiteralPath $existingExecutable) {
 # controlled outputs, which are safe to replace individually.
 try {
     New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
-    foreach ($fileName in @('Hdiff.exe', 'README.md')) {
+    foreach ($fileName in @('Hdiff.exe', 'python.exe', 'README.md')) {
         $oldFile = Join-Path $publishDirectory $fileName
         if (Test-Path -LiteralPath $oldFile) {
             Remove-Item -LiteralPath $oldFile -Force
@@ -78,6 +81,11 @@ try {
         throw "dotnet publish failed with exit code $LASTEXITCODE"
     }
 
+    # DocMine production proved that the target DRM permits protected PDF
+    # reads only to a python.exe basename. Keep Hdiff.exe as the user-facing UI
+    # and place an identical binary beside it solely for isolated PDF workers.
+    Copy-Item -LiteralPath (Join-Path $publishDirectory 'Hdiff.exe') `
+        -Destination (Join-Path $publishDirectory 'python.exe') -Force
     Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $publishDirectory 'README.md') -Force
     Compress-Archive -LiteralPath (Get-ChildItem -LiteralPath $publishDirectory -File | Select-Object -ExpandProperty FullName) `
         -DestinationPath $zipPath `

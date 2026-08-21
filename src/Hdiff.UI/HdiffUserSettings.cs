@@ -53,6 +53,16 @@ internal static class HdiffUserSettings
     public static void SaveIgnoreBlankLines(bool ignore)
         => Save(Load() with { IgnoreBlankLines = ignore });
 
+    public static bool LoadTextSelectionEnabled() => Load().TextSelectionEnabled ?? true;
+
+    public static void SaveTextSelectionEnabled(bool enabled)
+        => Save(Load() with { TextSelectionEnabled = enabled });
+
+    public static bool LoadIncludeMemos() => Load().IncludeMemos ?? false;
+
+    public static void SaveIncludeMemos(bool include)
+        => Save(Load() with { IncludeMemos = include });
+
     private static Settings Load()
     {
         try
@@ -81,7 +91,7 @@ internal static class HdiffUserSettings
         }
     }
 
-    private static Settings EmptySettings() => new(null, null, null, null, null, null);
+    private static Settings EmptySettings() => new(null, null, null, null, null, null, null, null);
 
     private sealed record Settings(
         string? DiffFontSize,
@@ -89,5 +99,7 @@ internal static class HdiffUserSettings
         bool? ShowRowSeparators,
         bool? WrapLongLines,
         bool? IgnoreWhitespaceChanges,
-        bool? IgnoreBlankLines);
+        bool? IgnoreBlankLines,
+        bool? TextSelectionEnabled,
+        bool? IncludeMemos);
 }

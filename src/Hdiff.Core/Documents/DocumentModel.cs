@@ -33,6 +33,7 @@ public sealed record ParsedDocument(
         {
             if (block.Kind == DocumentBlockKind.Table && block.Rows is not null)
             {
+                if (!string.IsNullOrWhiteSpace(block.Text)) yield return block.Text;
                 foreach (var row in block.Rows)
                     yield return "[표] " + string.Join(" | ", row);
             }

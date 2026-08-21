@@ -6,8 +6,10 @@ internal sealed class HdiffSettingsDialog : Form
     private readonly ComboBox _fontSizePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210 };
     private readonly CheckBox _wrapLongLines = new() { Text = "Word Wrap", AutoSize = true };
     private readonly CheckBox _rowSeparators = new() { Text = "Row Separators", AutoSize = true };
+    private readonly CheckBox _textSelection = new() { Text = "Text Selection", AutoSize = true };
     private readonly CheckBox _ignoreWhitespace = new() { Text = "Ignore Whitespace Changes", AutoSize = true };
     private readonly CheckBox _ignoreBlankLines = new() { Text = "Ignore Blank Lines", AutoSize = true };
+    private readonly CheckBox _includeMemos = new() { Text = "Include Memos", AutoSize = true };
 
     public HdiffSettingsDialog(
         string[] themeLabels,
@@ -16,8 +18,10 @@ internal sealed class HdiffSettingsDialog : Form
         int selectedFontSizeIndex,
         bool wrapLongLines,
         bool showRowSeparators,
+        bool textSelectionEnabled,
         bool ignoreWhitespaceChanges,
         bool ignoreBlankLines,
+        bool includeMemos,
         HdiffThemePalette theme)
     {
         Text = "Hdiff 설정";
@@ -26,7 +30,8 @@ internal sealed class HdiffSettingsDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(440, 390);
+        ClientSize = new Size(440, 540);
+        MinimumSize = new Size(480, 590);
         Padding = new Padding(16);
         Font = new Font("Segoe UI", 9f);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -37,25 +42,30 @@ internal sealed class HdiffSettingsDialog : Form
         _fontSizePicker.SelectedIndex = Math.Clamp(selectedFontSizeIndex, 0, fontSizeLabels.Length - 1);
         _wrapLongLines.Checked = wrapLongLines;
         _rowSeparators.Checked = showRowSeparators;
+        _textSelection.Checked = textSelectionEnabled;
         _ignoreWhitespace.Checked = ignoreWhitespaceChanges;
         _ignoreBlankLines.Checked = ignoreBlankLines;
+        _includeMemos.Checked = includeMemos;
 
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 6,
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         root.Controls.Add(CreateAppearanceGroup(), 0, 0);
-        root.Controls.Add(CreateCheckGroup("View", _wrapLongLines, _rowSeparators), 0, 1);
+        root.Controls.Add(CreateCheckGroup("View", _wrapLongLines, _rowSeparators, _textSelection), 0, 1);
         root.Controls.Add(CreateCheckGroup("Comparison", _ignoreWhitespace, _ignoreBlankLines), 0, 2);
-        root.Controls.Add(CreateButtonRow(theme), 0, 3);
+        root.Controls.Add(CreateCheckGroup("Document Content", _includeMemos), 0, 3);
+        root.Controls.Add(CreateButtonRow(theme), 0, 5);
         Controls.Add(root);
 
         ApplyTheme(theme);
@@ -65,8 +75,10 @@ internal sealed class HdiffSettingsDialog : Form
     public int SelectedFontSizeIndex => _fontSizePicker.SelectedIndex;
     public bool WrapLongLines => _wrapLongLines.Checked;
     public bool ShowRowSeparators => _rowSeparators.Checked;
+    public bool TextSelectionEnabled => _textSelection.Checked;
     public bool IgnoreWhitespaceChanges => _ignoreWhitespace.Checked;
     public bool IgnoreBlankLines => _ignoreBlankLines.Checked;
+    public bool IncludeMemos => _includeMemos.Checked;
 
     private GroupBox CreateAppearanceGroup()
     {
@@ -122,8 +134,10 @@ internal sealed class HdiffSettingsDialog : Form
             _fontSizePicker.SelectedIndex = Math.Min(1, _fontSizePicker.Items.Count - 1);
             _wrapLongLines.Checked = true;
             _rowSeparators.Checked = false;
+            _textSelection.Checked = true;
             _ignoreWhitespace.Checked = true;
             _ignoreBlankLines.Checked = true;
+            _includeMemos.Checked = false;
         };
 
         ApplyButtonTheme(defaults, theme);
@@ -144,7 +158,9 @@ internal sealed class HdiffSettingsDialog : Form
 
         var row = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Bottom,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
             RowCount = 1,
             Margin = new Padding(0, 12, 0, 0),

@@ -1,4 +1,7 @@
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using Hdiff.Core.Diff;
+using Hdiff.Core.Review;
 
 namespace Hdiff.UI;
 
@@ -17,6 +20,7 @@ internal sealed class SideBySideDiffView : UserControl
     private readonly Label _oldHeader = CreateHeader("변경 전");
     private readonly Label _newHeader = CreateHeader("변경 후");
     private readonly Panel _headerDivider = new() { Dock = DockStyle.Fill };
+    private readonly Panel _headerScrollSpacer = new() { Dock = DockStyle.Fill };
     private readonly DiffOverviewMap _oldOverview = new(oldSide: true) { Dock = DockStyle.None };
     private readonly DiffOverviewMap _newOverview = new(oldSide: false) { Dock = DockStyle.None };
     private readonly VScrollBar _verticalScroll = new() { Dock = DockStyle.Right };
@@ -25,6 +29,7 @@ internal sealed class SideBySideDiffView : UserControl
     private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = Color.White };
     private readonly List<VisualDiffRow> _visualRows = new();
     private readonly Dictionary<int, int> _diffRowToFirstVisualLine = new();
+    private readonly System.Windows.Forms.Timer _highlightTimer = new() { Interval = 1400 };
     private DocumentDiff? _lastDiff;
     private bool _wrapLongLines = true;
     private bool _reflowQueued;
@@ -42,16 +47,29 @@ internal sealed class SideBySideDiffView : UserControl
         {
             Dock = DockStyle.Top,
             Height = 32,
-            ColumnCount = 3,
+            ColumnCount = 4,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
         };
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SplitterWidth));
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        // The body reserves this lane for its shared vertical scrollbar.
+        // Reserving the same width in the header keeps both center dividers
+        // on one continuous X coordinate.
+        headers.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SystemInformation.VerticalScrollBarWidth));
         headers.Controls.Add(_oldHeader, 0, 0);
         headers.Controls.Add(_headerDivider, 1, 0);
         headers.Controls.Add(_newHeader, 2, 0);
+        headers.Controls.Add(_headerScrollSpacer, 3, 0);
+
+        _canvas.MemoAddRequested += (_, target) => MemoAddRequested?.Invoke(this, target);
+        _canvas.MemoOpenRequested += (_, target) => MemoOpenRequested?.Invoke(this, target);
+        _highlightTimer.Tick += (_, _) =>
+        {
+            _highlightTimer.Stop();
+            _canvas.HighlightedDiffRow = null;
+        };
 
         _oldOverview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
         _newOverview.NavigateToLineRequested += (_, line) => ScrollToDiffRow(line);
@@ -65,13 +83,49 @@ internal sealed class SideBySideDiffView : UserControl
         _verticalScroll.ValueChanged += (_, _) => UpdateCanvasScroll();
         _horizontalScroll.ValueChanged += (_, _) => UpdateCanvasScroll();
         _canvas.MouseWheel += CanvasMouseWheel;
-        _body.Resize += (_, _) => QueueReflow();
+        _body.Resize += (_, _) =>
+        {
+            // Column geometry is also needed before a diff exists so the
+            // center divider remains visible on the initial empty screen.
+            LayoutBody();
+            QueueReflow();
+        };
 
         Controls.Add(_body);
         Controls.Add(_horizontalScroll);
         Controls.Add(_verticalScroll);
         Controls.Add(headers);
         ApplyTheme(_theme);
+    }
+
+    /// <summary>A reviewer asked for a new memo on this comparison cell.</summary>
+    public event EventHandler<DiffMemoTarget>? MemoAddRequested;
+
+    /// <summary>A reviewer clicked the memo flag of this comparison cell.</summary>
+    public event EventHandler<DiffMemoTarget>? MemoOpenRequested;
+
+    /// <summary>Memos per comparison row, counted separately for each column.</summary>
+    public void SetMemoCounts(IReadOnlyDictionary<int, (int Old, int New)> countByDiffRow) =>
+        _canvas.SetMemoCounts(countByDiffRow);
+
+    /// <summary>
+    /// Marks the row a memo belongs to for as long as that memo stays selected,
+    /// which is what ties a memo in the list to its paragraph on screen.
+    /// </summary>
+    public int? PinnedDiffRow
+    {
+        get => _canvas.PinnedDiffRow;
+        set => _canvas.PinnedDiffRow = value;
+    }
+
+    /// <summary>Brings a comparison row into view and marks it briefly, for memo navigation.</summary>
+    public void RevealDiffRow(int diffRow)
+    {
+        if (!_diffRowToFirstVisualLine.ContainsKey(diffRow)) return;
+        ScrollToDiffRow(diffRow);
+        _canvas.HighlightedDiffRow = diffRow;
+        _highlightTimer.Stop();
+        _highlightTimer.Start();
     }
 
     /// <summary>Like VS Code's word wrap, but wrapping is calculated once for both sides.</summary>
@@ -92,6 +146,13 @@ internal sealed class SideBySideDiffView : UserControl
     {
         get => _canvas.ShowRowSeparators;
         set => _canvas.ShowRowSeparators = value;
+    }
+
+    /// <summary>Allow mouse selection and clipboard copy without changing the shared-canvas layout.</summary>
+    public bool TextSelectionEnabled
+    {
+        get => _canvas.TextSelectionEnabled;
+        set => _canvas.TextSelectionEnabled = value;
     }
 
     /// <summary>
@@ -119,6 +180,7 @@ internal sealed class SideBySideDiffView : UserControl
         _oldHeader.ForeColor = theme.Text;
         _newHeader.ForeColor = theme.Text;
         _headerDivider.BackColor = theme.AppBack;
+        _headerScrollSpacer.BackColor = theme.SurfaceBack;
         _verticalScroll.BackColor = theme.SurfaceBack;
         _horizontalScroll.BackColor = theme.SurfaceBack;
         _canvas.ApplyTheme(theme);
@@ -127,9 +189,19 @@ internal sealed class SideBySideDiffView : UserControl
         Invalidate();
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _highlightTimer.Dispose();
+        base.Dispose(disposing);
+    }
+
     public void Clear()
     {
         _lastDiff = null;
+        _highlightTimer.Stop();
+        _canvas.HighlightedDiffRow = null;
+        _canvas.PinnedDiffRow = null;
+        _canvas.SetMemoCounts(new Dictionary<int, (int, int)>());
         _oldHeader.Text = "변경 전";
         _newHeader.Text = "변경 후";
         _visualRows.Clear();
@@ -192,6 +264,7 @@ internal sealed class SideBySideDiffView : UserControl
                     oldFragments,
                     newFragments,
                     row.Kind,
+                    row.Presentation,
                     row.OldText is null,
                     row.NewText is null));
                 _oldTextWidth = Math.Max(_oldTextWidth, MeasureFragments(oldFragments));
@@ -365,6 +438,9 @@ internal sealed class SideBySideDiffView : UserControl
 
     private static readonly TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
+    /// <summary>One comparison cell: the row plus the column it belongs to.</summary>
+    internal readonly record struct DiffMemoTarget(int RowIndex, DiffMemoSide Side);
+
     private sealed record VisualDiffRow(
         int DiffRowIndex,
         int? OldLine,
@@ -372,6 +448,7 @@ internal sealed class SideBySideDiffView : UserControl
         IReadOnlyList<InlineDiffFragment> OldFragments,
         IReadOnlyList<InlineDiffFragment> NewFragments,
         DiffChangeKind Kind,
+        DiffRowPresentationKind Presentation,
         bool OldImaginary,
         bool NewImaginary);
 
@@ -379,12 +456,34 @@ internal sealed class SideBySideDiffView : UserControl
     {
         private const string DocumentFontFamily = "맑은 고딕";
         private const int RowVerticalPadding = 7;
+        private const int MemoAccentWidth = 3;
+        private const int MemoFlagWidth = 22;
+        private const int MemoFlagRightMargin = 6;
         private IReadOnlyList<VisualDiffRow> _rows = Array.Empty<VisualDiffRow>();
+        private IReadOnlyDictionary<int, (int Old, int New)> _memoCounts = new Dictionary<int, (int, int)>();
+        private int? _highlightedDiffRow;
+        private int? _pinnedDiffRow;
         private Rectangle _oldContentBounds;
         private Rectangle _newContentBounds;
         private Font _documentFont;
+        private Font _sectionHeaderFont;
+        // Chrome rather than document text, so this one does not follow the
+        // reader's document font size.
+        private readonly Font _memoFlagFont = new("Segoe UI", 7.5f, FontStyle.Bold);
         private HdiffThemePalette _theme = HdiffThemes.Light;
         private bool _showRowSeparators;
+        private bool _textSelectionEnabled = true;
+        private TextPosition? _selectionAnchor;
+        private TextPosition? _selectionEnd;
+        private bool _selecting;
+        private readonly ContextMenuStrip _selectionMenu = new();
+        private readonly ToolStripMenuItem _copySelectionItem = new("복사");
+        private readonly ToolStripMenuItem _selectAllItem = new("전체 선택");
+        private readonly ToolStripSeparator _memoSeparator = new();
+        private readonly ToolStripMenuItem _addMemoItem = new("검토 메모 추가…");
+        private readonly ToolStripMenuItem _openMemoItem = new("검토 메모 보기…");
+        private int _contextDiffRow = -1;
+        private DiffMemoSide _contextSide = DiffMemoSide.New;
 
         public DiffCanvas()
         {
@@ -394,9 +493,94 @@ internal sealed class SideBySideDiffView : UserControl
             // made the line rhythm look cramped. Use the standard Korean UI
             // family consistently instead.
             _documentFont = CreateDocumentFont(10.5f);
+            _sectionHeaderFont = CreateSectionHeaderFont(_documentFont);
             Font = _documentFont;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
-            TabStop = false;
+            TabStop = true;
+
+            _copySelectionItem.ShortcutKeyDisplayString = "Ctrl+C";
+            _copySelectionItem.Click += (_, _) => CopySelection();
+            _selectAllItem.ShortcutKeyDisplayString = "Ctrl+A";
+            _selectAllItem.Click += (_, _) => SelectAllOnActiveSide();
+            _addMemoItem.ShortcutKeyDisplayString = "Ctrl+M";
+            _addMemoItem.Click += (_, _) => RequestMemo(MemoAddRequested);
+            _openMemoItem.Click += (_, _) => RequestMemo(MemoOpenRequested);
+            _selectionMenu.Items.AddRange(new ToolStripItem[]
+            {
+                _copySelectionItem, _selectAllItem, _memoSeparator, _addMemoItem, _openMemoItem,
+            });
+            _selectionMenu.Opening += (_, e) =>
+            {
+                // The memo commands stay usable when text selection is off,
+                // so the menu itself is no longer cancelled in that case.
+                var location = PointToClient(Cursor.Position);
+                _contextDiffRow = GetDiffRowAt(location);
+                // The column the reviewer right-clicked is the column the memo
+                // is about, so no extra chooser is needed.
+                _contextSide = ResolveSide(_contextDiffRow, GetSide(location) == true ? DiffMemoSide.Old : DiffMemoSide.New);
+                _copySelectionItem.Enabled = _textSelectionEnabled && HasSelection;
+                _selectAllItem.Enabled = _textSelectionEnabled && _rows.Count > 0;
+                _addMemoItem.Text = _contextSide == DiffMemoSide.Old ? "변경 전에 검토 메모 추가…" : "변경 후에 검토 메모 추가…";
+                _addMemoItem.Enabled = _contextDiffRow >= 0;
+                _openMemoItem.Enabled = _contextDiffRow >= 0
+                    && GetMemoCount(_contextDiffRow, _contextSide == DiffMemoSide.Old) > 0;
+            };
+            ContextMenuStrip = _selectionMenu;
+        }
+
+        /// <summary>A reviewer asked for a new memo on this comparison row.</summary>
+        public event EventHandler<DiffMemoTarget>? MemoAddRequested;
+
+        /// <summary>A reviewer clicked the memo flag of this comparison row.</summary>
+        public event EventHandler<DiffMemoTarget>? MemoOpenRequested;
+
+        public int? HighlightedDiffRow
+        {
+            get => _highlightedDiffRow;
+            set
+            {
+                if (_highlightedDiffRow == value) return;
+                _highlightedDiffRow = value;
+                Invalidate();
+            }
+        }
+
+        public int? PinnedDiffRow
+        {
+            get => _pinnedDiffRow;
+            set
+            {
+                if (_pinnedDiffRow == value) return;
+                _pinnedDiffRow = value;
+                Invalidate();
+            }
+        }
+
+        public void SetMemoCounts(IReadOnlyDictionary<int, (int Old, int New)> countByDiffRow)
+        {
+            _memoCounts = countByDiffRow;
+            Invalidate();
+        }
+
+        private (int Old, int New) GetMemoCounts(int diffRowIndex) =>
+            _memoCounts.TryGetValue(diffRowIndex, out var counts) ? counts : (0, 0);
+
+        private int GetMemoCount(int diffRowIndex, bool oldSide)
+        {
+            var counts = GetMemoCounts(diffRowIndex);
+            return oldSide ? counts.Old : counts.New;
+        }
+
+        private int GetMemoCount(int diffRowIndex)
+        {
+            var counts = GetMemoCounts(diffRowIndex);
+            return counts.Old + counts.New;
+        }
+
+        private void RequestMemo(EventHandler<DiffMemoTarget>? handler)
+        {
+            if (_contextDiffRow < 0) return;
+            handler?.Invoke(this, new DiffMemoTarget(_contextDiffRow, _contextSide));
         }
 
         public int ScrollOffset { get; set; }
@@ -405,6 +589,18 @@ internal sealed class SideBySideDiffView : UserControl
         public float DocumentFontSizePoints => _documentFont.SizeInPoints;
         public Rectangle OldContentBounds => _oldContentBounds;
         public Rectangle NewContentBounds => _newContentBounds;
+        public bool TextSelectionEnabled
+        {
+            get => _textSelectionEnabled;
+            set
+            {
+                if (_textSelectionEnabled == value) return;
+                _textSelectionEnabled = value;
+                Cursor = value ? Cursors.IBeam : Cursors.Default;
+                if (!value) ClearSelection();
+            }
+        }
+
         public bool ShowRowSeparators
         {
             get => _showRowSeparators;
@@ -419,14 +615,21 @@ internal sealed class SideBySideDiffView : UserControl
         public void SetDocumentFontSize(float points)
         {
             var nextFont = CreateDocumentFont(points);
+            var nextHeaderFont = CreateSectionHeaderFont(nextFont);
             var previousFont = _documentFont;
+            var previousHeaderFont = _sectionHeaderFont;
             _documentFont = nextFont;
+            _sectionHeaderFont = nextHeaderFont;
             Font = nextFont;
             previousFont.Dispose();
+            previousHeaderFont.Dispose();
         }
 
         private static Font CreateDocumentFont(float points) =>
             new(DocumentFontFamily, points, FontStyle.Regular, GraphicsUnit.Point);
+
+        private static Font CreateSectionHeaderFont(Font documentFont) =>
+            new(documentFont, FontStyle.Bold);
 
         public void ApplyTheme(HdiffThemePalette theme)
         {
@@ -438,6 +641,7 @@ internal sealed class SideBySideDiffView : UserControl
         public void SetRows(IReadOnlyList<VisualDiffRow> rows)
         {
             _rows = rows;
+            ClearSelection();
             Invalidate();
         }
 
@@ -450,29 +654,145 @@ internal sealed class SideBySideDiffView : UserControl
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) _documentFont.Dispose();
+            if (disposing)
+            {
+                _selectionMenu.Dispose();
+                _documentFont.Dispose();
+                _sectionHeaderFont.Dispose();
+                _memoFlagFont.Dispose();
+            }
             base.Dispose(disposing);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (_textSelectionEnabled && keyData == (Keys.Control | Keys.C))
+            {
+                CopySelection();
+                return true;
+            }
+            if (_textSelectionEnabled && keyData == (Keys.Control | Keys.A))
+            {
+                SelectAllOnActiveSide();
+                return true;
+            }
+            if (_textSelectionEnabled && keyData == Keys.Escape)
+            {
+                ClearSelection();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.M))
+            {
+                var target = GetMemoTarget();
+                if (target is null) return true;
+                MemoAddRequested?.Invoke(this, target.Value);
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        /// <summary>
+        /// Ctrl+M follows the reader's attention: the selected paragraph first,
+        /// then whatever the pointer is over, then the top visible row.
+        /// </summary>
+        private DiffMemoTarget? GetMemoTarget()
+        {
+            if (_rows.Count == 0) return null;
+            if (_selectionAnchor is { } anchor && anchor.VisualRow >= 0 && anchor.VisualRow < _rows.Count)
+            {
+                var selectedRow = _rows[anchor.VisualRow].DiffRowIndex;
+                var selectedSide = anchor.OldSide ? DiffMemoSide.Old : DiffMemoSide.New;
+                return new DiffMemoTarget(selectedRow, ResolveSide(selectedRow, selectedSide));
+            }
+
+            var location = PointToClient(Cursor.Position);
+            var pointerRow = GetDiffRowAt(location);
+            if (pointerRow >= 0)
+            {
+                var pointerSide = GetSide(location) == true ? DiffMemoSide.Old : DiffMemoSide.New;
+                return new DiffMemoTarget(pointerRow, ResolveSide(pointerRow, pointerSide));
+            }
+
+            var visibleRow = _rows[Math.Clamp(ScrollOffset / RowHeight, 0, _rows.Count - 1)].DiffRowIndex;
+            return new DiffMemoTarget(visibleRow, ResolveSide(visibleRow, DiffMemoSide.New));
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Left && TryGetMemoFlag(e.Location, out var memoTarget))
+            {
+                Focus();
+                MemoOpenRequested?.Invoke(this, memoTarget);
+                return;
+            }
+            if (!_textSelectionEnabled || e.Button != MouseButtons.Left) return;
+
+            var position = HitTest(e.Location);
+            if (position is null) return;
+            Focus();
+            Capture = true;
+            _selecting = true;
+            _selectionAnchor = position;
+            _selectionEnd = position;
+            Invalidate();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            Cursor = TryGetMemoFlag(e.Location, out _)
+                ? Cursors.Hand
+                : _textSelectionEnabled && IsInsideDocumentColumn(e.Location)
+                    ? Cursors.IBeam
+                    : Cursors.Default;
+            if (!_selecting || _selectionAnchor is null) return;
+
+            var position = HitTest(e.Location, _selectionAnchor.Value.OldSide);
+            if (position is null) return;
+            _selectionEnd = position;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            _selecting = false;
+            Capture = false;
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
             e.Graphics.Clear(_theme.CanvasBack);
-            if (_rows.Count == 0) return;
-
-            var firstRow = Math.Clamp(ScrollOffset / RowHeight, 0, _rows.Count - 1);
-            var y = -(ScrollOffset % RowHeight);
-            for (var index = firstRow; index < _rows.Count && y < ClientSize.Height; index++, y += RowHeight)
+            if (_rows.Count > 0)
             {
-                var row = _rows[index];
-                DrawCell(e.Graphics, _oldContentBounds, y, row.OldLine, row.OldFragments, row.Kind, oldSide: true, row.OldImaginary);
-                DrawCell(e.Graphics, _newContentBounds, y, row.NewLine, row.NewFragments, row.Kind, oldSide: false, row.NewImaginary);
-                if (_showRowSeparators) DrawRowSeparator(e.Graphics, y + RowHeight - 1);
+                var firstRow = Math.Clamp(ScrollOffset / RowHeight, 0, _rows.Count - 1);
+                var y = -(ScrollOffset % RowHeight);
+                for (var index = firstRow; index < _rows.Count && y < ClientSize.Height; index++, y += RowHeight)
+                {
+                    var row = _rows[index];
+                    DrawCell(e.Graphics, _oldContentBounds, y, index, row.OldLine, row.OldFragments, row.Kind, row.Presentation, oldSide: true, row.OldImaginary);
+                    DrawCell(e.Graphics, _newContentBounds, y, index, row.NewLine, row.NewFragments, row.Kind, row.Presentation, oldSide: false, row.NewImaginary);
+                    DrawMemoIndicators(e.Graphics, y, index, row);
+                    if (_showRowSeparators && IsLastVisualLineOfDiffRow(index))
+                        DrawRowSeparator(e.Graphics, y + RowHeight - 1);
+                }
             }
 
+            DrawCenterDivider(e.Graphics);
+        }
+
+        private void DrawCenterDivider(Graphics graphics)
+        {
+            if (_newContentBounds.X <= 0) return;
+            var dividerLeft = _newContentBounds.X - SplitterWidth;
+            using var dividerBack = new SolidBrush(_theme.AppBack);
+            graphics.FillRectangle(dividerBack, dividerLeft, 0, SplitterWidth, ClientSize.Height);
             using var divider = new Pen(_theme.Border);
-            var dividerX = _oldContentBounds.Right + (SplitterWidth / 2);
-            e.Graphics.DrawLine(divider, dividerX, 0, dividerX, ClientSize.Height);
+            graphics.DrawLine(divider, dividerLeft + (SplitterWidth / 2), 0,
+                dividerLeft + (SplitterWidth / 2), ClientSize.Height);
         }
 
         private void DrawRowSeparator(Graphics graphics, int y)
@@ -482,24 +802,153 @@ internal sealed class SideBySideDiffView : UserControl
             graphics.DrawLine(separator, 0, y, ClientSize.Width - 1, y);
         }
 
+        private bool IsLastVisualLineOfDiffRow(int visualRowIndex) =>
+            visualRowIndex >= _rows.Count - 1
+            || _rows[visualRowIndex + 1].DiffRowIndex != _rows[visualRowIndex].DiffRowIndex;
+
+        private bool IsFirstVisualLineOfDiffRow(int visualRowIndex) =>
+            visualRowIndex <= 0
+            || _rows[visualRowIndex - 1].DiffRowIndex != _rows[visualRowIndex].DiffRowIndex;
+
+        /// <summary>
+        /// Draws the memo signals over both cells: an accent rail on every
+        /// visual line of the row and one numbered flag on its first line, the
+        /// way a Word comment anchor marks the commented text.
+        /// </summary>
+        private void DrawMemoIndicators(Graphics graphics, int y, int visualRowIndex, VisualDiffRow row)
+        {
+            var counts = GetMemoCounts(row.DiffRowIndex);
+            var marked = _highlightedDiffRow == row.DiffRowIndex || _pinnedDiffRow == row.DiffRowIndex;
+            if (counts.Old == 0 && counts.New == 0 && !marked) return;
+
+            using (var accent = new SolidBrush(_theme.MemoAccent))
+            {
+                if (counts.Old > 0 && _oldContentBounds.Width > 0)
+                    graphics.FillRectangle(accent, _oldContentBounds.X, y, MemoAccentWidth, RowHeight);
+                if (counts.New > 0 && _newContentBounds.Width > 0)
+                    graphics.FillRectangle(accent, _newContentBounds.X, y, MemoAccentWidth, RowHeight);
+            }
+
+            if (marked)
+            {
+                using var border = new Pen(_theme.MemoAccent);
+                if (IsFirstVisualLineOfDiffRow(visualRowIndex))
+                    graphics.DrawLine(border, 0, y, ClientSize.Width - 1, y);
+                if (IsLastVisualLineOfDiffRow(visualRowIndex))
+                    graphics.DrawLine(border, 0, y + RowHeight - 1, ClientSize.Width - 1, y + RowHeight - 1);
+            }
+
+            if (!IsFirstVisualLineOfDiffRow(visualRowIndex)) return;
+            DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: true), counts.Old);
+            DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: false), counts.New);
+        }
+
+        private void DrawMemoFlag(Graphics graphics, Rectangle bounds, int count)
+        {
+            if (count == 0 || bounds.Width <= 0) return;
+
+            var smoothing = graphics.SmoothingMode;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = CreateRoundedRectangle(bounds, bounds.Height / 2))
+            using (var fill = new SolidBrush(_theme.MemoAccent))
+            {
+                graphics.FillPath(fill, path);
+            }
+            graphics.SmoothingMode = smoothing;
+            TextRenderer.DrawText(graphics, count > 9 ? "9+" : count.ToString(), _memoFlagFont, bounds, _theme.MemoFlagText,
+                TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
+        /// <summary>Each column carries its own flag; an empty cell never gets one.</summary>
+        private Rectangle GetMemoFlagBounds(VisualDiffRow row, int y, bool oldSide)
+        {
+            if (oldSide ? row.OldImaginary : row.NewImaginary) return Rectangle.Empty;
+            var bounds = oldSide ? _oldContentBounds : _newContentBounds;
+            if (bounds.Width <= LineNumberWidth + MemoFlagWidth + MemoFlagRightMargin) return Rectangle.Empty;
+            var height = Math.Max(12, RowHeight - 8);
+            return new Rectangle(
+                bounds.Right - MemoFlagWidth - MemoFlagRightMargin,
+                y + ((RowHeight - height) / 2),
+                MemoFlagWidth,
+                height);
+        }
+
+        private bool TryGetMemoFlag(Point location, out DiffMemoTarget target)
+        {
+            target = default;
+            if (_rows.Count == 0 || location.Y < 0) return false;
+            var visualRow = (ScrollOffset + location.Y) / RowHeight;
+            if (visualRow < 0 || visualRow >= _rows.Count) return false;
+            var row = _rows[visualRow];
+            if (!IsFirstVisualLineOfDiffRow(visualRow)) return false;
+            var y = (visualRow * RowHeight) - ScrollOffset;
+
+            foreach (var oldSide in new[] { true, false })
+            {
+                if (GetMemoCount(row.DiffRowIndex, oldSide) == 0) continue;
+                var flag = GetMemoFlagBounds(row, y, oldSide);
+                if (flag.Width <= 0 || !flag.Contains(location)) continue;
+                target = new DiffMemoTarget(row.DiffRowIndex, oldSide ? DiffMemoSide.Old : DiffMemoSide.New);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>A memo cannot be written on an empty cell, so one-sided rows force their column.</summary>
+        private DiffMemoSide ResolveSide(int diffRowIndex, DiffMemoSide requested)
+        {
+            if (diffRowIndex < 0) return requested;
+            var row = _rows.FirstOrDefault(candidate => candidate.DiffRowIndex == diffRowIndex);
+            if (row is null) return requested;
+            if (row.OldImaginary) return DiffMemoSide.New;
+            if (row.NewImaginary) return DiffMemoSide.Old;
+            return requested;
+        }
+
+        private int GetDiffRowAt(Point location)
+        {
+            if (_rows.Count == 0 || location.Y < 0) return -1;
+            if (!_oldContentBounds.Contains(location) && !_newContentBounds.Contains(location)) return -1;
+            var visualRow = (ScrollOffset + location.Y) / RowHeight;
+            return visualRow < 0 || visualRow >= _rows.Count ? -1 : _rows[visualRow].DiffRowIndex;
+        }
+
+        private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
+        {
+            var path = new GraphicsPath();
+            var diameter = Math.Max(1, radius * 2);
+            path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Y, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
         private void DrawCell(
             Graphics graphics,
             Rectangle bounds,
             int y,
+            int visualRowIndex,
             int? lineNumber,
             IReadOnlyList<InlineDiffFragment> fragments,
             DiffChangeKind kind,
+            DiffRowPresentationKind presentation,
             bool oldSide,
             bool imaginary)
         {
             if (bounds.Width <= 0) return;
             var lineBounds = new Rectangle(bounds.X, y, bounds.Width, RowHeight);
-            var lineBackColor = GetLineBackColor(kind, oldSide);
+            var lineBackColor = presentation == DiffRowPresentationKind.SectionHeader && kind == DiffChangeKind.Unchanged
+                ? _theme.HeaderBack
+                : GetLineBackColor(kind, oldSide);
             using var lineBrush = new SolidBrush(lineBackColor);
             graphics.FillRectangle(lineBrush, lineBounds);
 
             var gutter = new Rectangle(bounds.X, y, Math.Min(LineNumberWidth, bounds.Width), RowHeight);
-            var lineText = lineNumber?.ToString() ?? string.Empty;
+            var lineText = presentation is DiffRowPresentationKind.SectionHeader or DiffRowPresentationKind.Spacer
+                ? string.Empty
+                : lineNumber?.ToString() ?? string.Empty;
             var markerBounds = new Rectangle(gutter.X, y, Math.Min(16, gutter.Width), RowHeight);
             var numberBounds = Rectangle.FromLTRB(markerBounds.Right, y, gutter.Right - 2, y + RowHeight);
             using var gutterBrush = new SolidBrush(_theme.GutterBack);
@@ -533,18 +982,171 @@ internal sealed class SideBySideDiffView : UserControl
 
                 foreach (var fragment in fragments)
                 {
-                    var width = TextRenderer.MeasureText(fragment.Text, Font, Size.Empty, TextFlags).Width;
+                    var textFont = presentation == DiffRowPresentationKind.SectionHeader
+                        ? _sectionHeaderFont
+                        : Font;
+                    var width = TextRenderer.MeasureText(fragment.Text, textFont, Size.Empty, TextFlags).Width;
                     var (foreColor, backColor) = GetFragmentColors(fragment.Kind, lineBackColor);
                     using var fragmentBrush = new SolidBrush(backColor);
                     graphics.FillRectangle(fragmentBrush, x, y, width, RowHeight);
-                    TextRenderer.DrawText(graphics, fragment.Text, Font, new Point(x, y + 2), foreColor, TextFlags);
+                    TextRenderer.DrawText(graphics, fragment.Text, textFont, new Point(x, y + 2), foreColor, TextFlags);
                     x += width;
                 }
+
+                DrawSelection(graphics, textBounds, y, visualRowIndex, oldSide, string.Concat(fragments.Select(fragment => fragment.Text)));
             }
             finally
             {
                 graphics.Restore(saved);
             }
+        }
+
+        private void DrawSelection(Graphics graphics, Rectangle textBounds, int y, int visualRowIndex, bool oldSide, string text)
+        {
+            var range = GetSelectionRange(visualRowIndex, oldSide, text.Length);
+            if (range is null || range.Value.Start == range.Value.End) return;
+
+            var startX = textBounds.X - HorizontalOffset + MeasureTextWidth(text.AsSpan(0, range.Value.Start));
+            var endX = textBounds.X - HorizontalOffset + MeasureTextWidth(text.AsSpan(0, range.Value.End));
+            using var selectionBrush = new SolidBrush(Color.FromArgb(105, SystemColors.Highlight));
+            graphics.FillRectangle(selectionBrush, startX, y, Math.Max(1, endX - startX), RowHeight);
+        }
+
+        private TextPosition? HitTest(Point location, bool? lockedOldSide = null)
+        {
+            if (_rows.Count == 0) return null;
+            var oldSide = lockedOldSide ?? GetSide(location);
+            if (oldSide is null) return null;
+
+            var bounds = oldSide.Value ? _oldContentBounds : _newContentBounds;
+            var clampedY = Math.Clamp(location.Y, 0, Math.Max(0, ClientSize.Height - 1));
+            var visualRow = Math.Clamp((ScrollOffset + clampedY) / RowHeight, 0, _rows.Count - 1);
+            var text = GetRowText(_rows[visualRow], oldSide.Value);
+            var textStartX = bounds.X + Math.Min(LineNumberWidth, bounds.Width) + 5 - HorizontalOffset;
+            var relativeX = Math.Max(0, location.X - textStartX);
+            return new TextPosition(oldSide.Value, visualRow, FindCharacterIndex(text, relativeX));
+        }
+
+        private bool? GetSide(Point location)
+        {
+            if (_oldContentBounds.Contains(location)) return true;
+            if (_newContentBounds.Contains(location)) return false;
+            return null;
+        }
+
+        private bool IsInsideDocumentColumn(Point location) => GetSide(location) is not null;
+
+        private int FindCharacterIndex(string text, int relativeX)
+        {
+            if (relativeX <= 0 || text.Length == 0) return 0;
+            var low = 0;
+            var high = text.Length;
+            while (low < high)
+            {
+                var middle = (low + high) / 2;
+                var width = MeasureTextWidth(text.AsSpan(0, middle));
+                if (width < relativeX) low = middle + 1;
+                else high = middle;
+            }
+
+            if (low == 0) return 0;
+            var leftWidth = MeasureTextWidth(text.AsSpan(0, low - 1));
+            var rightWidth = MeasureTextWidth(text.AsSpan(0, low));
+            return relativeX - leftWidth < rightWidth - relativeX ? low - 1 : low;
+        }
+
+        private int MeasureTextWidth(ReadOnlySpan<char> text) => text.IsEmpty
+            ? 0
+            : TextRenderer.MeasureText(text.ToString(), Font, Size.Empty, TextFlags).Width;
+
+        private static string GetRowText(VisualDiffRow row, bool oldSide) =>
+            string.Concat((oldSide ? row.OldFragments : row.NewFragments).Select(fragment => fragment.Text));
+
+        private bool HasSelection =>
+            _selectionAnchor is not null && _selectionEnd is not null && _selectionAnchor.Value != _selectionEnd.Value;
+
+        private (int Start, int End)? GetSelectionRange(int visualRow, bool oldSide, int textLength)
+        {
+            if (!HasSelection || _selectionAnchor!.Value.OldSide != oldSide) return null;
+            var (start, end) = NormalizedSelection();
+            if (visualRow < start.VisualRow || visualRow > end.VisualRow) return null;
+            var rangeStart = visualRow == start.VisualRow ? start.CharacterIndex : 0;
+            var rangeEnd = visualRow == end.VisualRow ? end.CharacterIndex : textLength;
+            return (Math.Clamp(rangeStart, 0, textLength), Math.Clamp(rangeEnd, 0, textLength));
+        }
+
+        private (TextPosition Start, TextPosition End) NormalizedSelection()
+        {
+            var anchor = _selectionAnchor!.Value;
+            var end = _selectionEnd!.Value;
+            return Compare(anchor, end) <= 0 ? (anchor, end) : (end, anchor);
+        }
+
+        private static int Compare(TextPosition left, TextPosition right)
+        {
+            var rowComparison = left.VisualRow.CompareTo(right.VisualRow);
+            return rowComparison != 0 ? rowComparison : left.CharacterIndex.CompareTo(right.CharacterIndex);
+        }
+
+        private void CopySelection()
+        {
+            var selectedText = GetSelectedText();
+            if (selectedText.Length == 0) return;
+            try
+            {
+                Clipboard.SetText(selectedText);
+            }
+            catch (ExternalException)
+            {
+                System.Media.SystemSounds.Beep.Play();
+            }
+        }
+
+        private string GetSelectedText()
+        {
+            if (!HasSelection) return string.Empty;
+            var (start, end) = NormalizedSelection();
+            var builder = new System.Text.StringBuilder();
+            int? lastSourceRow = null;
+
+            for (var visualRow = start.VisualRow; visualRow <= end.VisualRow; visualRow++)
+            {
+                var row = _rows[visualRow];
+                var text = GetRowText(row, start.OldSide);
+                var imaginary = start.OldSide ? row.OldImaginary : row.NewImaginary;
+                if (imaginary) continue;
+
+                var rangeStart = visualRow == start.VisualRow ? Math.Clamp(start.CharacterIndex, 0, text.Length) : 0;
+                var rangeEnd = visualRow == end.VisualRow ? Math.Clamp(end.CharacterIndex, 0, text.Length) : text.Length;
+                if (lastSourceRow is not null && lastSourceRow != row.DiffRowIndex)
+                    builder.AppendLine();
+                if (rangeEnd > rangeStart)
+                    builder.Append(text, rangeStart, rangeEnd - rangeStart);
+                lastSourceRow = row.DiffRowIndex;
+            }
+
+            return builder.ToString();
+        }
+
+        private void SelectAllOnActiveSide()
+        {
+            if (!_textSelectionEnabled || _rows.Count == 0) return;
+            var oldSide = _selectionAnchor?.OldSide ?? true;
+            var first = Enumerable.Range(0, _rows.Count)
+                .FirstOrDefault(index => !(oldSide ? _rows[index].OldImaginary : _rows[index].NewImaginary));
+            var last = Enumerable.Range(0, _rows.Count)
+                .LastOrDefault(index => !(oldSide ? _rows[index].OldImaginary : _rows[index].NewImaginary));
+            _selectionAnchor = new TextPosition(oldSide, first, 0);
+            _selectionEnd = new TextPosition(oldSide, last, GetRowText(_rows[last], oldSide).Length);
+            Invalidate();
+        }
+
+        private void ClearSelection()
+        {
+            _selectionAnchor = null;
+            _selectionEnd = null;
+            _selecting = false;
+            Invalidate();
         }
 
         private (Color ForeColor, Color BackColor) GetFragmentColors(InlineDiffFragmentKind kind, Color lineBackColor) => kind switch
@@ -576,5 +1178,7 @@ internal sealed class SideBySideDiffView : UserControl
             DiffChangeKind.Modified => _theme.InsertedLineBack,
             _ => _theme.CanvasBack,
         };
+
+        private readonly record struct TextPosition(bool OldSide, int VisualRow, int CharacterIndex);
     }
 }

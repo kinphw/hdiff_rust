@@ -15,8 +15,10 @@ public sealed class Hwp5Reader
     private const int CompressionFlag = 0x01;
     private const int ParaHeaderTag = 66;
     private const int ParaTextTag = 67;
+    private const int ControlHeaderTag = 71;
+    private static readonly byte[] MemoMarkerUtf16Le = Encoding.Unicode.GetBytes("MEMO");
 
-    public ParsedDocument Read(string path)
+    public ParsedDocument Read(string path, bool includeMemos = false)
     {
         using var compound = CompoundFileReader.Open(path);
         if (!compound.ContainsStream("FileHeader"))
@@ -44,7 +46,7 @@ public sealed class Hwp5Reader
         {
             var records = compound.ReadStream(sectionName);
             if (compressed) records = Inflate(records, sectionName);
-            ParseSection(records, $"본문 {SectionIndex(sectionName) + 1}", blocks, warnings);
+            ParseSection(records, $"본문 {SectionIndex(sectionName) + 1}", blocks, warnings, includeMemos);
         }
 
         // HwpObject writes a final BreakPara when saving, which materializes
@@ -74,17 +76,20 @@ public sealed class Hwp5Reader
         byte[] data,
         string sectionPath,
         List<DocumentBlock> blocks,
-        List<string> warnings)
+        List<string> warnings,
+        bool includeMemos)
     {
         StringBuilder? current = null;
         var offset = 0;
         var unsupported = new HashSet<int>();
+        int? skippedMemoControlLevel = null;
 
         while (offset + 4 <= data.Length)
         {
             var packed = BitConverter.ToUInt32(data, offset);
             offset += 4;
             var tag = (int)(packed & 0x3FF);
+            var level = (int)((packed >> 10) & 0x3FF);
             var size = (int)((packed >> 20) & 0xFFF);
             if (size == 0xFFF)
             {
@@ -97,6 +102,26 @@ public sealed class Hwp5Reader
 
             var payload = data.AsSpan(offset, size);
             offset += size;
+
+            if (skippedMemoControlLevel is { } memoLevel)
+            {
+                // Hancom 2018 stores the memo LIST_HEADER/PARA_HEADER at the
+                // same record level as its %unk field header; newer/synthetic
+                // files may use deeper levels. The host document resumes at a
+                // level shallower than the memo control.
+                if (level >= memoLevel)
+                    continue;
+                skippedMemoControlLevel = null;
+            }
+
+            if (!includeMemos && tag == ControlHeaderTag && IsMemoControl(payload))
+            {
+                // A binary HWP memo is a field/comment control followed by a
+                // nested paragraph list. Keep the host paragraph, but skip
+                // records below this control level until its subtree ends.
+                skippedMemoControlLevel = level;
+                continue;
+            }
 
             if (tag == ParaHeaderTag)
             {
@@ -129,6 +154,20 @@ public sealed class Hwp5Reader
             current = null;
         }
     }
+
+    private static bool IsMemoControl(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < 4) return false;
+
+        var raw = Encoding.ASCII.GetString(payload[..4]);
+        var reversed = new string(raw.Reverse().ToArray());
+        return IsMemoControlId(raw)
+            || IsMemoControlId(reversed)
+            || ((raw is "knu%" || reversed is "%unk") && payload.IndexOf(MemoMarkerUtf16Le) >= 0);
+    }
+
+    private static bool IsMemoControlId(string value)
+        => value is "%%me" or "tcmt";
 
     private static string DecodeParaText(
         ReadOnlySpan<byte> payload,

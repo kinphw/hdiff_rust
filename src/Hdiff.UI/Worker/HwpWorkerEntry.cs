@@ -42,7 +42,10 @@ internal static class HwpWorkerEntry
                 return new WorkerResponse(false, null, "COM 강제 테스트에는 COM 폴백 허용이 필요합니다.", null);
             try
             {
-                var document = new HwpComFallbackReader().Read(request.Path, "테스트 요청으로 직접 파서를 건너뜀");
+                var document = new HwpComFallbackReader().Read(
+                    request.Path,
+                    "테스트 요청으로 직접 파서를 건너뜀",
+                    request.IncludeMemos);
                 return new WorkerResponse(true, document, null, document.Reader);
             }
             catch (Exception comError)
@@ -51,16 +54,62 @@ internal static class HwpWorkerEntry
             }
         }
 
-        try
-        {
-            var document = new DocumentReader().Read(request.Path);
-            return new WorkerResponse(true, document, null, document.Reader);
-        }
-        catch (DocumentReadException directError) when (request.AllowComFallback)
+        if (PdfTextReader.IsSupportedExtension(request.Path))
         {
             try
             {
-                var document = new HwpComFallbackReader().Read(request.Path, directError.Message);
+                var document = new PdfTextReader().Read(request.Path);
+                return new WorkerResponse(true, document, null, document.Reader);
+            }
+            catch (Exception pdfError)
+            {
+                return new WorkerResponse(false, null, $"PDF 읽기 실패: {pdfError.Message}", null);
+            }
+        }
+
+        if (ExcelComReader.IsSupportedExtension(request.Path))
+        {
+            if (!request.AllowComFallback)
+                return new WorkerResponse(false, null, "Excel 문서는 읽기 전용 COM 허용이 필요합니다.", null);
+            try
+            {
+                var document = new ExcelComReader().Read(request.Path);
+                return new WorkerResponse(true, document, null, document.Reader);
+            }
+            catch (Exception excelError)
+            {
+                return new WorkerResponse(false, null, $"Excel COM 읽기 실패: {excelError.Message}", null);
+            }
+        }
+
+        if (WordComReader.IsSupportedExtension(request.Path))
+        {
+            if (!request.AllowComFallback)
+                return new WorkerResponse(false, null, "Word 문서는 읽기 전용 COM 허용이 필요합니다.", null);
+            try
+            {
+                var document = new WordComReader().Read(request.Path);
+                return new WorkerResponse(true, document, null, document.Reader);
+            }
+            catch (Exception wordError)
+            {
+                return new WorkerResponse(false, null, $"Word COM 읽기 실패: {wordError.Message}", null);
+            }
+        }
+
+        try
+        {
+            var document = new DocumentReader().Read(request.Path, request.IncludeMemos);
+            return new WorkerResponse(true, document, null, document.Reader);
+        }
+        catch (DocumentReadException directError) when (
+            request.AllowComFallback
+            && (Path.GetExtension(request.Path).Equals(".hwp", StringComparison.OrdinalIgnoreCase)
+                || Path.GetExtension(request.Path).Equals(".hwpx", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var document = new HwpComFallbackReader().Read(request.Path, directError.Message, request.IncludeMemos);
                 return new WorkerResponse(true, document, null, document.Reader);
             }
             catch (Exception comError)
@@ -76,5 +125,9 @@ internal static class HwpWorkerEntry
     }
 }
 
-internal sealed record WorkerRequest(string Path, bool AllowComFallback, bool ForceComFallback = false);
+internal sealed record WorkerRequest(
+    string Path,
+    bool AllowComFallback,
+    bool IncludeMemos = false,
+    bool ForceComFallback = false);
 internal sealed record WorkerResponse(bool Ok, ParsedDocument? Document, string? Error, string? Reader);

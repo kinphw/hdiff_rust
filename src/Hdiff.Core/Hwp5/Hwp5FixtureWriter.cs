@@ -38,8 +38,28 @@ public static class Hwp5FixtureWriter
         if (paragraphPayloads.Any(payload => payload is null || payload.Length % sizeof(char) != 0))
             throw new ArgumentException("문단 payload는 완전한 UTF-16LE WCHAR 배열이어야 합니다.", nameof(paragraphPayloads));
 
+        WriteSectionStream(path, CreateSection(paragraphPayloads));
+    }
+
+    /// <summary>
+    /// Writes a small record tree containing a binary memo control and its
+    /// nested paragraph list. This is only for reader regression tests.
+    /// </summary>
+    public static void WriteWithMemo(string path, string bodyBefore, string memoText, string bodyAfter)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        using var section = new MemoryStream();
+        WriteParagraph(section, level: 0, Encoding.Unicode.GetBytes(bodyBefore));
+        WriteRecord(section, tag: 71, level: 1, payload: Encoding.ASCII.GetBytes("%%me"));
+        WriteRecord(section, tag: 72, level: 2, payload: Array.Empty<byte>());
+        WriteParagraph(section, level: 3, Encoding.Unicode.GetBytes(memoText));
+        WriteParagraph(section, level: 0, Encoding.Unicode.GetBytes(bodyAfter));
+        WriteSectionStream(path, section.ToArray());
+    }
+
+    private static void WriteSectionStream(string path, byte[] section)
+    {
         var fileHeader = CreateFileHeader();
-        var section = CreateSection(paragraphPayloads);
         var fileHeaderMiniCount = DivRoundUp(fileHeader.Length, MiniSectorSize);
         var sectionMiniStart = fileHeaderMiniCount;
         var sectionMiniCount = DivRoundUp(section.Length, MiniSectorSize);
@@ -96,15 +116,18 @@ public static class Hwp5FixtureWriter
     {
         using var ms = new MemoryStream();
         foreach (var paraText in paragraphPayloads)
-        {
-            var paraHeader = new byte[22];
-            BinaryPrimitives.WriteUInt32LittleEndian(
-                paraHeader.AsSpan(0, 4),
-                checked((uint)(paraText.Length / sizeof(char))));
-            WriteRecord(ms, tag: 66, level: 0, payload: paraHeader);
-            WriteRecord(ms, tag: 67, level: 1, payload: paraText);
-        }
+            WriteParagraph(ms, level: 0, paraText);
         return ms.ToArray();
+    }
+
+    private static void WriteParagraph(Stream stream, int level, byte[] paraText)
+    {
+        var paraHeader = new byte[22];
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            paraHeader.AsSpan(0, 4),
+            checked((uint)(paraText.Length / sizeof(char))));
+        WriteRecord(stream, tag: 66, level, payload: paraHeader);
+        WriteRecord(stream, tag: 67, level: level + 1, payload: paraText);
     }
 
     private static void WriteRecord(Stream stream, int tag, int level, byte[] payload)
