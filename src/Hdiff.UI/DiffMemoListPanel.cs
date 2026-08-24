@@ -130,10 +130,15 @@ internal sealed class DiffMemoListPanel : Panel
 
     private Control CreateCard(DiffMemoRow memo)
     {
-        var card = Table(_theme.MemoSurfaceBack,new Padding(10,8,8,8));
+        var card = MemoCardTable(_theme.MemoSurfaceBack,new Padding(10,8,8,8));
         card.Width = CardWidth(); card.Margin = new Padding(0,0,0,8); card.Tag = memo.Id;
         card.Cursor = memo.Orphaned ? Cursors.Default : Cursors.Hand;
-        card.Paint += (_,e) => PaintCard(e.Graphics,card.ClientRectangle,memo);
+        card.TabStop = !memo.Orphaned;
+        card.AccessibleRole = AccessibleRole.ListItem;
+        card.AccessibleName = $"검토 메모 {memo.Number} · {memo.Author} · {Shorten(Flatten(memo.Text),60)}";
+        card.Paint += (_,e) => PaintCard(e.Graphics,card.ClientRectangle,memo,card.Focused);
+        card.GotFocus += (_,_) => card.Invalidate();
+        card.LostFocus += (_,_) => card.Invalidate();
         var head = new FlowLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, Dock = DockStyle.Fill, WrapContents = true };
         head.Controls.Add(Chip(memo.Number.ToString(),_theme.MemoAccent,_theme.MemoFlagText));
         head.Controls.Add(Chip(memo.Side == DiffMemoSide.Old ? "전" : "후",
@@ -150,14 +155,25 @@ internal sealed class DiffMemoListPanel : Panel
         var body = Wrap(memo.Text,_theme.MemoSurfaceBack,_theme.Text,9f,260); body.Margin = new Padding(0,7,0,0); Add(card,body);
         var foot = new TableLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, ColumnCount = 2, Dock = DockStyle.Fill, Margin = new Padding(0,7,0,0) };
         foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50)); foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));
-        foot.Controls.Add(Meta(memo.Author,ContentAlignment.MiddleLeft),0,0); foot.Controls.Add(Meta(memo.When,ContentAlignment.MiddleRight),1,0); Add(card,foot);
+        foot.Controls.Add(Meta(memo.Author,ContentAlignment.MiddleLeft,HdiffThemes.MemoAuthorColor(_theme,memo.Author)),0,0);
+        foot.Controls.Add(Meta(memo.When,ContentAlignment.MiddleRight),1,0); Add(card,foot);
         foreach (var reply in memo.Replies) Add(card,CreateReply(memo.Id,reply));
         var tools = new FlowLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, Margin = new Padding(0,8,0,0), WrapContents = false };
         var replyButton = ActionButton("회신"); var edit = ActionButton("편집"); var delete = ActionButton("삭제");
         replyButton.Click += (_,_) => BeginReply(memo.Id); edit.Click += (_,_) => BeginEdit(memo.Id);
         delete.Click += (_,_) => DeleteRequested?.Invoke(this,memo.Id);
         tools.Controls.AddRange(new Control[] { replyButton,edit,delete }); Add(card,tools);
-        if (!memo.Orphaned) AttachActivation(card,memo.Id);
+        if (!memo.Orphaned)
+        {
+            AttachActivation(card,memo.Id);
+            card.KeyDown += (_,e) =>
+            {
+                if(e.KeyCode is not (Keys.Enter or Keys.Space)) return;
+                e.SuppressKeyPress = true;
+                SelectMemo(memo.Id);
+                MemoActivated?.Invoke(this,memo.Id);
+            };
+        }
         return card;
     }
 
@@ -208,20 +224,28 @@ internal sealed class DiffMemoListPanel : Panel
     private void InsertEditor(Control editor,int index){_editor=editor;_list.Controls.Add(editor);_list.Controls.SetChildIndex(editor,Math.Clamp(index,0,_list.Controls.Count-1));_list.ScrollControlIntoView(editor);}
     private void CancelEditor(){if(_editor is null)return;_list.Controls.Remove(_editor);_editor.Dispose();_editor=null;}
     private void AttachActivation(Control c,string id){if(c is Button or TextBox)return;c.Click+=(_,_)=>{SelectMemo(id);MemoActivated?.Invoke(this,id);};foreach(Control child in c.Controls)AttachActivation(child,id);}
-    private void PaintCard(Graphics g,Rectangle r,DiffMemoRow m){using var p=new Pen(_selectedId==m.Id?_theme.MemoAccent:_theme.Border,_selectedId==m.Id?2:1);g.DrawRectangle(p,0,0,r.Width-1,r.Height-1);using var b=new SolidBrush(m.Orphaned?_theme.MutedText:_theme.MemoAccent);g.FillRectangle(b,0,0,3,r.Height);}
+    private void PaintCard(Graphics g,Rectangle r,DiffMemoRow m,bool focused){var active=_selectedId==m.Id||focused;using var p=new Pen(active?_theme.MemoAccent:_theme.Border,active?2:1);g.DrawRectangle(p,0,0,r.Width-1,r.Height-1);using var b=new SolidBrush(m.Orphaned?_theme.MutedText:HdiffThemes.MemoAuthorColor(_theme,m.Author));g.FillRectangle(b,0,0,3,r.Height);}
     private Label Chip(string t,Color b,Color f)=>new(){AutoSize=true,BackColor=b,ForeColor=f,Font=new Font("Segoe UI",7.5f,FontStyle.Bold),Margin=new Padding(0,0,5,0),MinimumSize=new Size(18,18),Padding=new Padding(4,2,4,2),Text=t,TextAlign=ContentAlignment.MiddleCenter};
-    private Label Meta(string t,ContentAlignment a)=>new(){AutoEllipsis=true,BackColor=_theme.MemoSurfaceBack,Dock=DockStyle.Fill,ForeColor=_theme.MutedText,Font=new Font("Segoe UI",7.5f),Text=t,TextAlign=a};
+    private Label Meta(string t,ContentAlignment a,Color? color=null)=>new(){AutoEllipsis=true,BackColor=_theme.MemoSurfaceBack,Dock=DockStyle.Fill,ForeColor=color??_theme.MutedText,Font=new Font("Segoe UI",7.5f,color is null?FontStyle.Regular:FontStyle.Bold),Text=t,TextAlign=a};
     private Button ActionButton(string t,bool primary=false){var b=new Button{AutoSize=true,Text=t,Padding=new Padding(5,0,5,0),Margin=new Padding(0,0,5,0)};StyleButton(b,primary);return b;}
     private void StyleButton(Button b,bool primary){b.FlatStyle=FlatStyle.Flat;b.FlatAppearance.BorderColor=primary?_theme.PrimaryActionBack:_theme.ButtonBorder;b.FlatAppearance.MouseOverBackColor=primary?_theme.PrimaryActionHover:_theme.HeaderBack;b.BackColor=primary?_theme.PrimaryActionBack:_theme.ButtonBack;b.ForeColor=primary?_theme.PrimaryActionText:_theme.ButtonText;}
     private void ResizeChildren(){var w=CardWidth();foreach(Control c in _list.Controls)if(c is TableLayoutPanel)c.Width=w;}
     private int CardWidth()=>Math.Max(250,_list.ClientSize.Width-_list.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-2);
     private int IndexOf(string id){for(var i=0;i<_list.Controls.Count;i++)if(_list.Controls[i].Tag is string x&&x==id)return i;return -1;}
     private static TableLayoutPanel Table(Color b,Padding p){var t=new TableLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,BackColor=b,ColumnCount=1,Padding=p,RowCount=0};t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));return t;}
+    private static SelectableMemoCard MemoCardTable(Color b,Padding p){var t=new SelectableMemoCard{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,BackColor=b,ColumnCount=1,Padding=p,RowCount=0};t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));return t;}
     private static Label Wrap(string t,Color b,Color f,float s,int w)=>new(){AutoSize=true,BackColor=b,ForeColor=f,Font=new Font("맑은 고딕",s),MaximumSize=new Size(w,0),Text=t};
     private static void Add(TableLayoutPanel t,Control c){var row=t.RowCount++;t.RowStyles.Add(new RowStyle(SizeType.AutoSize));t.Controls.Add(c,0,row);}
     private Color KindBack(DiffChangeKind k)=>k switch{DiffChangeKind.Inserted=>_theme.InsertedLineBack,DiffChangeKind.Deleted=>_theme.DeletedLineBack,_=>_theme.HeaderBack};
     private Color KindFore(DiffChangeKind k)=>k switch{DiffChangeKind.Inserted=>_theme.AddedText,DiffChangeKind.Deleted=>_theme.RemovedText,DiffChangeKind.Modified=>_theme.Text,_=>_theme.MutedText};
     private static string KindLabel(DiffChangeKind k)=>k switch{DiffChangeKind.Inserted=>"추가",DiffChangeKind.Deleted=>"삭제",DiffChangeKind.Modified=>"수정",_=>"동일"};
-    private static string Flatten(string t)=>t.Replace("\r\n"," ",StringComparison.Ordinal).Replace("\n"," ",StringComparison.Ordinal).Replace("\r"," ",StringComparison.Ordinal);
+    private static string Flatten(string t)=>t.Replace("\r\n","↵",StringComparison.Ordinal).Replace("\n","↵",StringComparison.Ordinal).Replace("\r","↵",StringComparison.Ordinal);
     private static string Shorten(string t,int n)=>t.Length<=n?t:t[..n]+"…";
+
+    private sealed class SelectableMemoCard : TableLayoutPanel
+    {
+        public SelectableMemoCard() => SetStyle(ControlStyles.Selectable,true);
+        protected override bool IsInputKey(Keys keyData) =>
+            (keyData & Keys.KeyCode) is Keys.Enter or Keys.Space || base.IsInputKey(keyData);
+    }
 }

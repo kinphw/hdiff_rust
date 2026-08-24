@@ -300,11 +300,7 @@ internal sealed class MainForm : Form
 
     private IReadOnlyDictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)> BuildMemoNumbers()
     {
-        if (_currentDiff is null)
-            return new Dictionary<int, (IReadOnlyList<int>, IReadOnlyList<int>)>();
-
-        return _memoStore.Memos
-            .Select((memo, index) => (Memo: memo, Number: index + 1))
+        return NumberedMemos()
             .Where(item => !item.Memo.Anchor.IsOrphaned)
             .GroupBy(item => item.Memo.Anchor.RowIndex)
             .ToDictionary(
@@ -323,22 +319,27 @@ internal sealed class MainForm : Form
     private IReadOnlyList<DiffMemoRow> BuildMemoRows()
     {
         if (_currentDiff is null) return Array.Empty<DiffMemoRow>();
-        return _memoStore.Memos
-            .Select((memo, index) => new DiffMemoRow(
-                memo.Id,
-                index + 1,
-                memo.Anchor.Kind,
-                memo.Anchor.Side,
-                memo.Anchor.RowIndex,
-                memo.Anchor.IsOrphaned ? string.Empty : DescribeRowPosition(_currentDiff.Rows[memo.Anchor.RowIndex]),
-                memo.Anchor.Quote,
-                memo.Text,
-                memo.Author,
-                memo.LastEditedAt.ToString("yyyy-MM-dd HH:mm"),
-                memo.Anchor.IsOrphaned,
-                memo.Replies))
+        return NumberedMemos()
+            .Select(item => new DiffMemoRow(
+                item.Memo.Id,
+                item.Number,
+                item.Memo.Anchor.Kind,
+                item.Memo.Anchor.Side,
+                item.Memo.Anchor.RowIndex,
+                item.Memo.Anchor.IsOrphaned ? string.Empty : DescribeRowPosition(_currentDiff.Rows[item.Memo.Anchor.RowIndex]),
+                item.Memo.Anchor.Quote,
+                item.Memo.Text,
+                item.Memo.Author,
+                item.Memo.LastEditedAt.ToString("yyyy-MM-dd HH:mm")
+                    + (item.Memo.UpdatedAt is null ? string.Empty : " (수정됨)"),
+                item.Memo.Anchor.IsOrphaned,
+                item.Memo.Replies))
             .ToArray();
     }
+
+    private IReadOnlyList<NumberedDiffMemo> NumberedMemos() => _currentDiff is null
+        ? Array.Empty<NumberedDiffMemo>()
+        : DiffMemoDisplay.NumberForDisplay(_memoStore.Memos, _currentDiff.Rows.Count);
 
     private void ShowMemoPanel(bool show)
     {
@@ -409,8 +410,7 @@ internal sealed class MainForm : Form
 
     private void OpenMemosForCell(SideBySideDiffView.DiffMemoTarget target)
     {
-        var memos = _memoStore.Memos
-            .Select((memo, index) => (Memo: memo, Number: index + 1))
+        var memos = NumberedMemos()
             .Where(item => item.Memo.Anchor.RowIndex == target.RowIndex
                 && item.Memo.Anchor.Side == target.Side)
             .ToArray();
@@ -418,7 +418,7 @@ internal sealed class MainForm : Form
         var selected = target.MemoNumber is { } number
             ? memos.FirstOrDefault(item => item.Number == number)
             : memos[0];
-        if (selected.Memo is null) return;
+        if (selected is null) return;
         ShowMemoPanel(true);
         _memoPanel.SelectMemo(selected.Memo.Id);
         NavigateToMemo(selected.Memo.Id);
@@ -433,9 +433,8 @@ internal sealed class MainForm : Form
         }
         // The pin stays while the memo stays selected, so the list row and the
         // paragraph on screen visibly belong together.
-        var number = _memoStore.Memos
-            .Select((candidate, index) => (candidate, Number: index + 1))
-            .First(item => item.candidate.Id == id)
+        var number = NumberedMemos()
+            .First(item => item.Memo.Id == id)
             .Number;
         _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(
             memo.Anchor.RowIndex, memo.Anchor.Side, number);

@@ -37,10 +37,10 @@ public static class HtmlDiffExporter
         if (options.FontSizePixels is < 8 or > 32)
             throw new ArgumentOutOfRangeException(nameof(options), "Font size must be between 8px and 32px.");
 
-        var notes = NumberMemos(memos, diff.Rows.Count);
+        var notes = DiffMemoDisplay.NumberForDisplay(memos, diff.Rows.Count);
         var notesByRow = notes.Where(note => !note.Memo.Anchor.IsOrphaned)
             .GroupBy(note => note.Memo.Anchor.RowIndex)
-            .ToDictionary(group => group.Key, group => (IReadOnlyList<NumberedMemo>)group.ToArray());
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<NumberedDiffMemo>)group.ToArray());
         var oldName = FileName(diff.OldDocument.SourcePath);
         var newName = FileName(diff.NewDocument.SourcePath);
         var title = $"Hdiff — {oldName} ↔ {newName}";
@@ -77,23 +77,6 @@ public static class HtmlDiffExporter
         return builder.ToString();
     }
 
-    /// <summary>
-    /// Gives every memo the reading-order number shown both on the row flag and
-    /// on the panel card. Memos whose paragraph is gone keep a number so the
-    /// reader can still see that a note exists.
-    /// </summary>
-    private static IReadOnlyList<NumberedMemo> NumberMemos(IReadOnlyList<DiffMemo>? memos, int rowCount)
-    {
-        if (memos is null || memos.Count == 0) return Array.Empty<NumberedMemo>();
-        return memos
-            .OrderBy(memo => memo.Anchor.IsOrphaned || memo.Anchor.RowIndex >= rowCount ? int.MaxValue : memo.Anchor.RowIndex)
-            .ThenBy(memo => memo.CreatedAt)
-            .Select((memo, index) => new NumberedMemo(
-                index + 1,
-                memo.Anchor.RowIndex >= rowCount ? memo with { Anchor = memo.Anchor with { RowIndex = DiffMemoAnchor.OrphanedRowIndex } } : memo))
-            .ToArray();
-    }
-
     private static void AppendTopBar(StringBuilder builder, DocumentDiff diff, HtmlDiffExportOptions options, int memoCount)
     {
         builder.AppendLine("<header class=\"top-bar\">")
@@ -118,7 +101,7 @@ public static class HtmlDiffExporter
         DocumentDiff diff,
         string oldName,
         string newName,
-        IReadOnlyDictionary<int, IReadOnlyList<NumberedMemo>> notesByRow)
+        IReadOnlyDictionary<int, IReadOnlyList<NumberedDiffMemo>> notesByRow)
     {
         builder.AppendLine("<section class=\"diff-stage\" aria-label=\"문서 비교 결과\">");
         AppendPaneHeader(builder, oldSide: true, oldName);
@@ -151,7 +134,7 @@ public static class HtmlDiffExporter
             .Append(caption).Append(" <span>· ").Append(Encode(fileName)).AppendLine("</span></header>");
     }
 
-    private static void AppendPairRow(StringBuilder builder, DiffRow row, int rowIndex, IReadOnlyList<NumberedMemo>? notes)
+    private static void AppendPairRow(StringBuilder builder, DiffRow row, int rowIndex, IReadOnlyList<NumberedDiffMemo>? notes)
     {
         var presentation = row.Presentation switch
         {
@@ -173,7 +156,7 @@ public static class HtmlDiffExporter
         builder.AppendLine("</div>");
     }
 
-    private static void AppendRow(StringBuilder builder, DiffRow row, bool oldSide, IReadOnlyList<NumberedMemo>? notes)
+    private static void AppendRow(StringBuilder builder, DiffRow row, bool oldSide, IReadOnlyList<NumberedDiffMemo>? notes)
     {
         var side = oldSide ? "old" : "new";
         var text = oldSide ? row.OldText : row.NewText;
@@ -223,10 +206,10 @@ public static class HtmlDiffExporter
         builder.AppendLine("</div></div>");
     }
 
-    private static string FlagTooltip(NumberedMemo note) =>
+    private static string FlagTooltip(NumberedDiffMemo note) =>
         $"검토 메모 {note.Number} · {note.Memo.Author} · {Shorten(note.Memo.Text, 60)}";
 
-    private static void AppendMemoPanel(StringBuilder builder, DocumentDiff diff, IReadOnlyList<NumberedMemo> notes)
+    private static void AppendMemoPanel(StringBuilder builder, DocumentDiff diff, IReadOnlyList<NumberedDiffMemo> notes)
     {
         builder.AppendLine("<aside class=\"memo-panel\" id=\"memo-panel\" aria-label=\"검토 메모\">")
             .AppendLine("<header class=\"memo-panel-head\">")
@@ -234,7 +217,7 @@ public static class HtmlDiffExporter
             .Append(notes.Count)
             .AppendLine("</span><span class=\"memo-unsaved\" id=\"memo-unsaved\" hidden>저장 안 됨</span><button type=\"button\" class=\"memo-panel-close\" id=\"memo-close\" title=\"메모 접기\" aria-label=\"메모 접기\">×</button></div>")
             .AppendLine("<div class=\"memo-panel-tools\">")
-            .AppendLine("<input id=\"reviewer-name\" type=\"text\" value=\"\" maxlength=\"40\" placeholder=\"내 이름 (메모·회신 작성자)\" aria-label=\"메모와 회신 작성자 이름\">")
+            .AppendLine("<input id=\"reviewer-name\" type=\"text\" value=\"\" maxlength=\"60\" placeholder=\"내 이름 (메모·회신 작성자)\" aria-label=\"메모와 회신 작성자 이름\">")
             .AppendLine("<button type=\"button\" id=\"memo-save\">회신 저장</button></div>")
             .AppendLine("<p class=\"memo-panel-hint\">메모와 회신은 여러 개를 먼저 다 쓴 뒤 <b>회신 저장</b>을 한 번만 누르면 됩니다. 그때 저장 위치를 고르면 그 파일에 담기고, 그 파일을 그대로 회신하면 됩니다. 새 메모는 비교 행 오른쪽의 <b>+</b> 로 답니다.</p>")
             .AppendLine("<p class=\"memo-saved\" id=\"memo-saved\" hidden><span id=\"memo-saved-text\"></span><button type=\"button\" class=\"memo-relocate\" id=\"memo-relocate\" hidden>위치 변경</button></p>")
@@ -254,6 +237,7 @@ public static class HtmlDiffExporter
             if (!orphaned) builder.Append(" data-row=\"").Append(memo.Anchor.RowIndex).Append('"');
             var side = memo.Anchor.Side == DiffMemoSide.Old ? "old" : "new";
             builder.Append(" data-side=\"").Append(side).Append('"');
+            builder.Append(" data-author-color=\"").Append(AuthorColorIndex(memo.Author)).Append('"');
             builder.AppendLine(" tabindex=\"0\">")
                 .Append("<header class=\"memo-card-head\"><span class=\"memo-number\">").Append(note.Number)
                 .Append("</span><span class=\"memo-side ").Append(side).Append("\">")
@@ -331,8 +315,6 @@ public static class HtmlDiffExporter
         DiffChangeKind.Modified => "수정",
         _ => "동일",
     };
-
-    private sealed record NumberedMemo(int Number, DiffMemo Memo);
 
     private static string GetMarker(DiffChangeKind kind, bool oldSide, bool imaginary)
     {
@@ -457,7 +439,6 @@ button{font:inherit}
 .memo-empty{margin:2px;padding:10px;border:1px dashed var(--border);color:var(--muted);font-size:11px;line-height:1.6}
 .memo-add{position:absolute;z-index:6;width:22px;height:22px;padding:0;border:1px solid var(--memo-accent);border-radius:11px;background:var(--surface);color:var(--memo-accent);font-size:15px;font-weight:700;line-height:1;cursor:pointer}
 .memo-add:hover{background:var(--memo-accent);color:var(--memo-flag-text)}
-.memo-card.added{border-left-color:var(--author-color,var(--memo-accent))}
 .memo-card-remove{width:16px;height:16px;padding:0;border:0;background:none;color:var(--muted);font-size:12px;line-height:1;cursor:pointer}
 .memo-draft{border-left-color:var(--primary)}
 .memo-panel-tools{margin-top:6px;display:flex;gap:5px}
@@ -471,10 +452,10 @@ button{font:inherit}
 .memo-replies{display:flex;flex-direction:column;gap:6px}
 .memo-replies:not(:empty){margin-top:8px}
 .memo-reply{--author-color:var(--primary);padding:6px 8px;border-left:3px solid var(--author-color);background:var(--surface)}
-.memo-reply[data-author-color="0"]{--author-color:var(--author-0)}.memo-reply[data-author-color="1"]{--author-color:var(--author-1)}
-.memo-reply[data-author-color="2"]{--author-color:var(--author-2)}.memo-reply[data-author-color="3"]{--author-color:var(--author-3)}
-.memo-reply[data-author-color="4"]{--author-color:var(--author-4)}.memo-reply[data-author-color="5"]{--author-color:var(--author-5)}
-.memo-reply[data-author-color="6"]{--author-color:var(--author-6)}.memo-reply[data-author-color="7"]{--author-color:var(--author-7)}
+.memo-card[data-author-color="0"],.memo-reply[data-author-color="0"]{--author-color:var(--author-0)}.memo-card[data-author-color="1"],.memo-reply[data-author-color="1"]{--author-color:var(--author-1)}
+.memo-card[data-author-color="2"],.memo-reply[data-author-color="2"]{--author-color:var(--author-2)}.memo-card[data-author-color="3"],.memo-reply[data-author-color="3"]{--author-color:var(--author-3)}
+.memo-card[data-author-color="4"],.memo-reply[data-author-color="4"]{--author-color:var(--author-4)}.memo-card[data-author-color="5"],.memo-reply[data-author-color="5"]{--author-color:var(--author-5)}
+.memo-card[data-author-color="6"],.memo-reply[data-author-color="6"]{--author-color:var(--author-6)}.memo-card[data-author-color="7"],.memo-reply[data-author-color="7"]{--author-color:var(--author-7)}
 .memo-reply-head{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted)}
 .reply-author{color:var(--author-color);font-weight:700}
 .reply-delete{margin-left:auto;width:16px;height:16px;padding:0;border:0;background:none;color:var(--muted);font-size:12px;line-height:1;cursor:pointer}
@@ -488,7 +469,7 @@ button{font:inherit}
 .memo-reply-editor button{padding:2px 9px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:11px;cursor:pointer}
 .memo-reply-editor .reply-save{border-color:var(--primary);background:var(--primary);color:#fff;font-weight:700}
 .memo-list{min-height:0;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:8px}
-.memo-card{padding:8px 10px;background:var(--memo-card);border:1px solid var(--border);border-left:3px solid var(--memo-accent);cursor:pointer}
+.memo-card{--author-color:var(--memo-accent);padding:8px 10px;background:var(--memo-card);border:1px solid var(--border);border-left:3px solid var(--author-color);cursor:pointer}
 .memo-card.orphaned{border-left-color:var(--muted);opacity:.75;cursor:default}
 .memo-card.selected,.memo-card:focus-visible{outline:2px solid var(--memo-accent);outline-offset:-1px}
 .memo-card-head{display:flex;align-items:center;gap:6px;font-size:10px}
@@ -499,6 +480,7 @@ button{font:inherit}
 .memo-quote{margin:6px 0 0;padding-left:7px;border-left:2px solid var(--border);color:var(--memo-quote);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
 .memo-body{margin:7px 0 0;font-size:12px;line-height:1.6;color:var(--text);overflow-wrap:anywhere}
 .memo-card-foot{margin-top:7px;display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px}
+.memo-card-foot span:first-child{color:var(--author-color);font-weight:700}
 @media(max-width:700px){.export-meta{display:none}.top-bar{grid-template-columns:auto 1fr}.compact-summary{justify-content:flex-end}}
 /* Below this width the two panes already fight for room, so the memo panel
    floats above the stage instead of taking a column from it. */

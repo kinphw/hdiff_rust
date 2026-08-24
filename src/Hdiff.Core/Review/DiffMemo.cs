@@ -273,6 +273,8 @@ public sealed class DiffMemoStore
         var leftRow = left.Anchor.IsOrphaned ? int.MaxValue : left.Anchor.RowIndex;
         var rightRow = right.Anchor.IsOrphaned ? int.MaxValue : right.Anchor.RowIndex;
         var byRow = leftRow.CompareTo(rightRow);
-        return byRow != 0 ? byRow : left.CreatedAt.CompareTo(right.CreatedAt);
+        if (byRow != 0) return byRow;
+        var byCreated = left.CreatedAt.CompareTo(right.CreatedAt);
+        return byCreated != 0 ? byCreated : StringComparer.Ordinal.Compare(left.Id,right.Id);
     });
 }

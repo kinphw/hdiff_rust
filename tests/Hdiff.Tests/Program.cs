@@ -248,6 +248,12 @@ var insertedRowIndex = exportDiff.Rows.Select((row, index) => (row, index)).Firs
 memoStore.Add(exportDiff, modifiedRowIndex, DiffMemoSide.New, "김검토", "표현이 바뀐 이유를 <확인>해 주세요.", memoTime);
 memoStore.Add(exportDiff, modifiedRowIndex, DiffMemoSide.Old, "박작성", "삭제된 옛 표현에 대한 의견입니다.", memoTime.AddMinutes(3));
 memoStore.Add(exportDiff, insertedRowIndex, DiffMemoSide.New, "김검토", "새 문단은 부칙으로 옮기는 편이 좋겠습니다.", memoTime.AddMinutes(5));
+var numberedFromReverse = DiffMemoDisplay.NumberForDisplay(memoStore.Memos.Reverse(), exportDiff.Rows.Count);
+Expect(numberedFromReverse.Select(item => item.Memo.Anchor.RowIndex).SequenceEqual(
+        numberedFromReverse.Select(item => item.Memo.Anchor.RowIndex).OrderBy(index => index)),
+    "입력 컬렉션 순서와 관계없이 본체와 HTML이 같은 문단 순서로 메모 번호를 매겨야 합니다.");
+Expect(numberedFromReverse.Select(item => item.Number).SequenceEqual(Enumerable.Range(1, memoStore.Count)),
+    "공통 표시 번호는 빠짐없이 1부터 이어져야 합니다.");
 Expect(memoStore.Count == 3 && memoStore.ForRow(modifiedRowIndex).Count == 2,
     "한 비교 행에 여러 개의 검토 메모를 달 수 있어야 합니다.");
 Expect(memoStore.CountByRowSide()[modifiedRowIndex] == (1, 1),
@@ -261,6 +267,8 @@ var appReply=memoStore.AddReply(oldSideMemo.Id,"이회신","본체에서 추가�
 Expect(memoStore.Find(oldSideMemo.Id)!.Replies.Single()==appReply,"본체 회신은 코어 데이터로 보존되어야 합니다.");
 Expect(memoStore.RemoveReply(oldSideMemo.Id,appReply.Id),"회신을 삭제할 수 있어야 합니다.");
 memoStore.AddReply(oldSideMemo.Id,"이회신","본체에서 추가한 회신입니다.",memoTime.AddMinutes(7));
+Expect(memoStore.Update(oldSideMemo.Id,oldSideMemo.Author,oldSideMemo.Text,memoTime.AddMinutes(8)),
+    "메모 편집 시 수정 시각을 기록해야 합니다.");
 
 static DocumentBlock MemoBlock(string text) => new(DocumentBlockKind.Paragraph, text);
 var anchorBefore = new ParsedDocument("anchor-before", new[] { MemoBlock("가 조항"), MemoBlock("나 조항"), MemoBlock("다 조항") }, "test", Array.Empty<string>());
@@ -311,6 +319,11 @@ Expect(exportedHtmlWithMemos.Contains("class=\"memo-reply-add\"", StringComparis
 Expect(exportedHtmlWithMemos.Contains("data-reply-id=",StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("본체에서 추가한 회신입니다.",StringComparison.Ordinal),
     "본체에서 작성한 회신도 공유 HTML에 포함되어야 합니다.");
+Expect(exportedHtmlWithMemos.Contains("(수정됨)",StringComparison.Ordinal)
+    && exportedHtmlWithMemos.Contains("data-author-color=",StringComparison.Ordinal)
+    && exportedHtmlWithMemos.Contains(".memo-card[data-author-color=",StringComparison.Ordinal)
+    && exportedHtmlWithMemos.Contains("maxlength=\"60\"",StringComparison.Ordinal),
+    "HTML 카드도 수정 여부, 작성자 색상과 공통 작성자 길이 제한을 표시해야 합니다.");
 Expect(exportedHtmlWithMemos.Contains("id=\"memo-add\"", StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("function createMemo(", StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("function renumber(", StringComparison.Ordinal),
@@ -355,6 +368,7 @@ var memoPanelSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hd
 var mainFormSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","MainForm.cs"));
 var diffViewSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","SideBySideDiffView.cs"));
 var memoLinkOverlaySource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","MemoLinkOverlay.cs"));
+var memoDisplaySource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.Core","Review","DiffMemoDisplay.cs"));
 Expect(memoPanelSource.Contains("Dock = DockStyle.Right",StringComparison.Ordinal)
     && memoPanelSource.Contains("PanelWidth = 320",StringComparison.Ordinal)
     && memoPanelSource.Contains("CreateCard",StringComparison.Ordinal)
@@ -379,8 +393,16 @@ Expect(!diffViewSource.Contains("Dock = DockStyle.Right",StringComparison.Ordina
     "동기화된 변경 위치 막대가 기본 세로 스크롤바를 완전히 대체해야 합니다.");
 Expect(diffViewSource.Contains("SetMemoNumbers",StringComparison.Ordinal)
     && diffViewSource.Contains("numbers[index]",StringComparison.Ordinal)
-    && mainFormSource.Contains("BuildMemoNumbers",StringComparison.Ordinal),
+    && mainFormSource.Contains("BuildMemoNumbers",StringComparison.Ordinal)
+    && mainFormSource.Contains("DiffMemoDisplay.NumberForDisplay",StringComparison.Ordinal)
+    && memoDisplaySource.Contains("ThenBy(memo => memo.Id",StringComparison.Ordinal),
     "본문 메모 표식은 칸별 개수가 아니라 카드와 동일한 전역 메모 번호를 표시해야 합니다.");
+Expect(memoPanelSource.Contains("AccessibleRole.ListItem",StringComparison.Ordinal)
+    && memoPanelSource.Contains("Keys.Enter or Keys.Space",StringComparison.Ordinal)
+    && memoPanelSource.Contains("ControlStyles.Selectable",StringComparison.Ordinal)
+    && memoPanelSource.Contains("MemoAuthorColor(_theme,m.Author)",StringComparison.Ordinal)
+    && mainFormSource.Contains("(수정됨)",StringComparison.Ordinal),
+    "본체 카드도 키보드 선택, 작성자 색상과 수정 여부를 HTML과 동일하게 제공해야 합니다.");
 var exportedMemoHtmlPath = Path.Combine(fixtureDir, "standalone-diff-preview-memos.html");
 File.WriteAllText(exportedMemoHtmlPath, exportedHtmlWithMemos, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
