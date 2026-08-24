@@ -369,8 +369,18 @@ Expect(diffViewSource.Contains("DrawMemoAdd",StringComparison.Ordinal)
     && memoPanelSource.Contains("TryGetSelectedCardAnchorScreen",StringComparison.Ordinal)
     && mainFormSource.Contains("UpdateMemoLinkOverlay",StringComparison.Ordinal)
     && memoLinkOverlaySource.Contains("path.AddBezier",StringComparison.Ordinal)
-    && memoLinkOverlaySource.Contains("HtTransparent",StringComparison.Ordinal),
+    && memoLinkOverlaySource.Contains("HtTransparent",StringComparison.Ordinal)
+    && memoLinkOverlaySource.Contains("ShowWithoutActivation",StringComparison.Ordinal)
+    && memoLinkOverlaySource.Contains("TransparencyKey",StringComparison.Ordinal),
     "행 호버 추가 버튼과 본문부터 실제 메모 카드까지 이어지는 비간섭 연결선이 있어야 합니다.");
+Expect(!diffViewSource.Contains("Dock = DockStyle.Right",StringComparison.Ordinal)
+    && diffViewSource.Contains("Visible = false, TabStop = false",StringComparison.Ordinal)
+    && !diffViewSource.Contains("_headerScrollSpacer",StringComparison.Ordinal),
+    "동기화된 변경 위치 막대가 기본 세로 스크롤바를 완전히 대체해야 합니다.");
+Expect(diffViewSource.Contains("SetMemoNumbers",StringComparison.Ordinal)
+    && diffViewSource.Contains("numbers[index]",StringComparison.Ordinal)
+    && mainFormSource.Contains("BuildMemoNumbers",StringComparison.Ordinal),
+    "본문 메모 표식은 칸별 개수가 아니라 카드와 동일한 전역 메모 번호를 표시해야 합니다.");
 var exportedMemoHtmlPath = Path.Combine(fixtureDir, "standalone-diff-preview-memos.html");
 File.WriteAllText(exportedMemoHtmlPath, exportedHtmlWithMemos, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 

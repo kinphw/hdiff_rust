@@ -169,9 +169,8 @@ internal sealed class MainForm : Form
         Controls.Add(_summaryPanel);
         Controls.Add(_actions);
         Controls.Add(_sources);
-        Controls.Add(_memoLinkOverlay);
-        _memoLinkOverlay.BringToFront();
         Layout += (_, _) => UpdateMemoLinkOverlay();
+        Move += (_, _) => UpdateMemoLinkOverlay();
         ApplyTheme((DiffThemeOption)_themePicker.SelectedItem!, persist: false);
     }
 
@@ -182,6 +181,7 @@ internal sealed class MainForm : Form
             CancelScheduledAutomaticCompare();
             _toolTip.Dispose();
             _applicationIcon?.Dispose();
+            _memoLinkOverlay.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -290,14 +290,34 @@ internal sealed class MainForm : Form
 
     private void RefreshMemoSurfaces()
     {
-        _diffView.SetMemoCounts(_currentDiff is null
-            ? new Dictionary<int, (int, int)>()
-            : _memoStore.CountByRowSide());
+        _diffView.SetMemoNumbers(BuildMemoNumbers());
         _memoPanel.SetMemos(BuildMemoRows());
         _memoPanel.SetDirty(_memosDirty);
         _memoButton.Text = _memoStore.Count == 0 ? "검토 메모" : $"검토 메모 {_memoStore.Count}";
         _memoButton.Enabled = _currentDiff is not null;
         UpdateMemoLinkOverlay();
+    }
+
+    private IReadOnlyDictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)> BuildMemoNumbers()
+    {
+        if (_currentDiff is null)
+            return new Dictionary<int, (IReadOnlyList<int>, IReadOnlyList<int>)>();
+
+        return _memoStore.Memos
+            .Select((memo, index) => (Memo: memo, Number: index + 1))
+            .Where(item => !item.Memo.Anchor.IsOrphaned)
+            .GroupBy(item => item.Memo.Anchor.RowIndex)
+            .ToDictionary(
+                group => group.Key,
+                group => (
+                    Old: (IReadOnlyList<int>)group
+                        .Where(item => item.Memo.Anchor.Side == DiffMemoSide.Old)
+                        .Select(item => item.Number)
+                        .ToArray(),
+                    New: (IReadOnlyList<int>)group
+                        .Where(item => item.Memo.Anchor.Side == DiffMemoSide.New)
+                        .Select(item => item.Number)
+                        .ToArray()));
     }
 
     private IReadOnlyList<DiffMemoRow> BuildMemoRows()
@@ -337,10 +357,9 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var diffBounds = RectangleToClient(_diffView.RectangleToScreen(_diffView.ClientRectangle));
-        var memoBounds = RectangleToClient(_memoPanel.RectangleToScreen(_memoPanel.ClientRectangle));
-        _memoLinkOverlay.Bounds = Rectangle.Union(diffBounds, memoBounds);
-        _memoLinkOverlay.ShowLink(start, end);
+        var diffBounds = _diffView.RectangleToScreen(_diffView.ClientRectangle);
+        var memoBounds = _memoPanel.RectangleToScreen(_memoPanel.ClientRectangle);
+        _memoLinkOverlay.ShowLink(Rectangle.Union(diffBounds, memoBounds), start, end, this);
     }
 
     private void AddMemo(SideBySideDiffView.DiffMemoTarget target)
@@ -390,13 +409,19 @@ internal sealed class MainForm : Form
 
     private void OpenMemosForCell(SideBySideDiffView.DiffMemoTarget target)
     {
-        var memos = _memoStore.ForRow(target.RowIndex)
-            .Where(memo => memo.Anchor.Side == target.Side)
+        var memos = _memoStore.Memos
+            .Select((memo, index) => (Memo: memo, Number: index + 1))
+            .Where(item => item.Memo.Anchor.RowIndex == target.RowIndex
+                && item.Memo.Anchor.Side == target.Side)
             .ToArray();
         if (memos.Length == 0) return;
+        var selected = target.MemoNumber is { } number
+            ? memos.FirstOrDefault(item => item.Number == number)
+            : memos[0];
+        if (selected.Memo is null) return;
         ShowMemoPanel(true);
-        _memoPanel.SelectMemo(memos[0].Id);
-        _diffView.PinnedMemoTarget = target;
+        _memoPanel.SelectMemo(selected.Memo.Id);
+        NavigateToMemo(selected.Memo.Id);
     }
 
     private void NavigateToMemo(string id)
@@ -408,7 +433,12 @@ internal sealed class MainForm : Form
         }
         // The pin stays while the memo stays selected, so the list row and the
         // paragraph on screen visibly belong together.
-        _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(memo.Anchor.RowIndex,memo.Anchor.Side);
+        var number = _memoStore.Memos
+            .Select((candidate, index) => (candidate, Number: index + 1))
+            .First(item => item.candidate.Id == id)
+            .Number;
+        _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(
+            memo.Anchor.RowIndex, memo.Anchor.Side, number);
         _diffView.RevealDiffRow(memo.Anchor.RowIndex);
     }
 

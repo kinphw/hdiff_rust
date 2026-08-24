@@ -7,11 +7,14 @@ namespace Hdiff.UI;
 /// The window is click-through, so it never interferes with text selection or
 /// controls below it.
 /// </summary>
-internal sealed class MemoLinkOverlay : Control
+internal sealed class MemoLinkOverlay : Form
 {
     private const int WsExTransparent = 0x20;
+    private const int WsExNoActivate = 0x08000000;
+    private const int WsExToolWindow = 0x00000080;
     private const int WmNcHitTest = 0x0084;
     private static readonly IntPtr HtTransparent = new(-1);
+    private static readonly Color TransparencyColor = Color.Fuchsia;
 
     private Point? _start;
     private Point? _end;
@@ -19,21 +22,23 @@ internal sealed class MemoLinkOverlay : Control
 
     public MemoLinkOverlay()
     {
-        SetStyle(ControlStyles.UserPaint
-            | ControlStyles.AllPaintingInWmPaint
-            | ControlStyles.SupportsTransparentBackColor
-            | ControlStyles.ResizeRedraw, true);
-        BackColor = Color.Transparent;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = TransparencyColor;
+        TransparencyKey = TransparencyColor;
+        DoubleBuffered = true;
         TabStop = false;
-        Visible = false;
     }
+
+    protected override bool ShowWithoutActivation => true;
 
     protected override CreateParams CreateParams
     {
         get
         {
             var parameters = base.CreateParams;
-            parameters.ExStyle |= WsExTransparent;
+            parameters.ExStyle |= WsExTransparent | WsExNoActivate | WsExToolWindow;
             return parameters;
         }
     }
@@ -44,12 +49,12 @@ internal sealed class MemoLinkOverlay : Control
         Invalidate();
     }
 
-    public void ShowLink(Point startScreen, Point endScreen)
+    public void ShowLink(Rectangle boundsScreen, Point startScreen, Point endScreen, IWin32Window owner)
     {
+        Bounds = boundsScreen;
         _start = PointToClient(startScreen);
         _end = PointToClient(endScreen);
-        Visible = true;
-        BringToFront();
+        if (!Visible) Show(owner);
         Invalidate();
     }
 
@@ -57,12 +62,7 @@ internal sealed class MemoLinkOverlay : Control
     {
         _start = null;
         _end = null;
-        Visible = false;
-    }
-
-    protected override void OnPaintBackground(PaintEventArgs e)
-    {
-        // WS_EX_TRANSPARENT lets already-painted sibling controls show through.
+        if (Visible) Hide();
     }
 
     protected override void OnPaint(PaintEventArgs e)

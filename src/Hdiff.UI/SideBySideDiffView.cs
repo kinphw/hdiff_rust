@@ -20,10 +20,11 @@ internal sealed class SideBySideDiffView : UserControl
     private readonly Label _oldHeader = CreateHeader("변경 전");
     private readonly Label _newHeader = CreateHeader("변경 후");
     private readonly Panel _headerDivider = new() { Dock = DockStyle.Fill };
-    private readonly Panel _headerScrollSpacer = new() { Dock = DockStyle.Fill };
     private readonly DiffOverviewMap _oldOverview = new(oldSide: true) { Dock = DockStyle.None };
     private readonly DiffOverviewMap _newOverview = new(oldSide: false) { Dock = DockStyle.None };
-    private readonly VScrollBar _verticalScroll = new() { Dock = DockStyle.Right };
+    // The two overview maps are the visible synchronized scroll controls. Keep
+    // a hidden ScrollBar only as the range/value model used by existing logic.
+    private readonly VScrollBar _verticalScroll = new() { Visible = false, TabStop = false, Size = Size.Empty };
     private readonly HScrollBar _horizontalScroll = new() { Dock = DockStyle.Bottom, Visible = false };
     private readonly DiffCanvas _canvas = new() { Dock = DockStyle.Fill };
     private readonly Panel _body = new() { Dock = DockStyle.Fill, BackColor = Color.White };
@@ -47,21 +48,16 @@ internal sealed class SideBySideDiffView : UserControl
         {
             Dock = DockStyle.Top,
             Height = 32,
-            ColumnCount = 4,
+            ColumnCount = 3,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
         };
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SplitterWidth));
         headers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        // The body reserves this lane for its shared vertical scrollbar.
-        // Reserving the same width in the header keeps both center dividers
-        // on one continuous X coordinate.
-        headers.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SystemInformation.VerticalScrollBarWidth));
         headers.Controls.Add(_oldHeader, 0, 0);
         headers.Controls.Add(_headerDivider, 1, 0);
         headers.Controls.Add(_newHeader, 2, 0);
-        headers.Controls.Add(_headerScrollSpacer, 3, 0);
 
         _canvas.MemoAddRequested += (_, target) => MemoAddRequested?.Invoke(this, target);
         _canvas.MemoOpenRequested += (_, target) => MemoOpenRequested?.Invoke(this, target);
@@ -108,9 +104,10 @@ internal sealed class SideBySideDiffView : UserControl
     /// <summary>The selected memo anchor moved because the view scrolled or reflowed.</summary>
     public event EventHandler? MemoGeometryChanged;
 
-    /// <summary>Memos per comparison row, counted separately for each column.</summary>
-    public void SetMemoCounts(IReadOnlyDictionary<int, (int Old, int New)> countByDiffRow) =>
-        _canvas.SetMemoCounts(countByDiffRow);
+    /// <summary>Global memo numbers per comparison row, separated by column.</summary>
+    public void SetMemoNumbers(
+        IReadOnlyDictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)> numbersByDiffRow) =>
+        _canvas.SetMemoNumbers(numbersByDiffRow);
 
     /// <summary>
     /// Marks the row a memo belongs to for as long as that memo stays selected,
@@ -205,7 +202,6 @@ internal sealed class SideBySideDiffView : UserControl
         _oldHeader.ForeColor = theme.Text;
         _newHeader.ForeColor = theme.Text;
         _headerDivider.BackColor = theme.AppBack;
-        _headerScrollSpacer.BackColor = theme.SurfaceBack;
         _verticalScroll.BackColor = theme.SurfaceBack;
         _horizontalScroll.BackColor = theme.SurfaceBack;
         _canvas.ApplyTheme(theme);
@@ -226,7 +222,8 @@ internal sealed class SideBySideDiffView : UserControl
         _highlightTimer.Stop();
         _canvas.HighlightedDiffRow = null;
         _canvas.PinnedDiffRow = null;
-        _canvas.SetMemoCounts(new Dictionary<int, (int, int)>());
+        _canvas.SetMemoNumbers(
+            new Dictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)>());
         _oldHeader.Text = "변경 전";
         _newHeader.Text = "변경 후";
         _visualRows.Clear();
@@ -465,7 +462,7 @@ internal sealed class SideBySideDiffView : UserControl
     private static readonly TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
     /// <summary>One comparison cell: the row plus the column it belongs to.</summary>
-    internal readonly record struct DiffMemoTarget(int RowIndex, DiffMemoSide Side);
+    internal readonly record struct DiffMemoTarget(int RowIndex, DiffMemoSide Side, int? MemoNumber = null);
 
     private sealed record VisualDiffRow(
         int DiffRowIndex,
@@ -487,7 +484,8 @@ internal sealed class SideBySideDiffView : UserControl
         private const int MemoFlagRightMargin = 6;
         private const int MemoAddSize = 22;
         private IReadOnlyList<VisualDiffRow> _rows = Array.Empty<VisualDiffRow>();
-        private IReadOnlyDictionary<int, (int Old, int New)> _memoCounts = new Dictionary<int, (int, int)>();
+        private IReadOnlyDictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)> _memoNumbers =
+            new Dictionary<int, (IReadOnlyList<int>, IReadOnlyList<int>)>();
         private int? _highlightedDiffRow;
         private int? _pinnedDiffRow;
         private DiffMemoTarget? _pinnedMemoTarget;
@@ -604,32 +602,48 @@ internal sealed class SideBySideDiffView : UserControl
 
                 var y = (index * RowHeight) - ScrollOffset;
                 if (y + RowHeight <= 0 || y >= ClientSize.Height) return false;
-                bounds = GetMemoFlagBounds(row, y, target.Side == DiffMemoSide.Old);
+                var numbers = GetMemoNumbers(row.DiffRowIndex, target.Side == DiffMemoSide.Old);
+                var flagIndex = target.MemoNumber is { } number ? IndexOf(numbers, number) : 0;
+                if (flagIndex < 0) return false;
+                bounds = GetMemoFlagBounds(row, y, target.Side == DiffMemoSide.Old, flagIndex);
                 return !bounds.IsEmpty;
             }
 
             return false;
         }
 
-        public void SetMemoCounts(IReadOnlyDictionary<int, (int Old, int New)> countByDiffRow)
+        public void SetMemoNumbers(
+            IReadOnlyDictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)> numbersByDiffRow)
         {
-            _memoCounts = countByDiffRow;
+            _memoNumbers = numbersByDiffRow;
             Invalidate();
         }
 
-        private (int Old, int New) GetMemoCounts(int diffRowIndex) =>
-            _memoCounts.TryGetValue(diffRowIndex, out var counts) ? counts : (0, 0);
+        private (IReadOnlyList<int> Old, IReadOnlyList<int> New) GetMemoNumbers(int diffRowIndex) =>
+            _memoNumbers.TryGetValue(diffRowIndex, out var numbers)
+                ? numbers
+                : (Array.Empty<int>(), Array.Empty<int>());
 
-        private int GetMemoCount(int diffRowIndex, bool oldSide)
+        private IReadOnlyList<int> GetMemoNumbers(int diffRowIndex, bool oldSide)
         {
-            var counts = GetMemoCounts(diffRowIndex);
-            return oldSide ? counts.Old : counts.New;
+            var numbers = GetMemoNumbers(diffRowIndex);
+            return oldSide ? numbers.Old : numbers.New;
         }
+
+        private int GetMemoCount(int diffRowIndex, bool oldSide) =>
+            GetMemoNumbers(diffRowIndex, oldSide).Count;
 
         private int GetMemoCount(int diffRowIndex)
         {
-            var counts = GetMemoCounts(diffRowIndex);
-            return counts.Old + counts.New;
+            var numbers = GetMemoNumbers(diffRowIndex);
+            return numbers.Old.Count + numbers.New.Count;
+        }
+
+        private static int IndexOf(IReadOnlyList<int> numbers, int number)
+        {
+            for (var index = 0; index < numbers.Count; index++)
+                if (numbers[index] == number) return index;
+            return -1;
         }
 
         private void RequestMemo(EventHandler<DiffMemoTarget>? handler)
@@ -876,15 +890,15 @@ internal sealed class SideBySideDiffView : UserControl
         /// </summary>
         private void DrawMemoIndicators(Graphics graphics, int y, int visualRowIndex, VisualDiffRow row)
         {
-            var counts = GetMemoCounts(row.DiffRowIndex);
+            var numbers = GetMemoNumbers(row.DiffRowIndex);
             var marked = _highlightedDiffRow == row.DiffRowIndex || _pinnedDiffRow == row.DiffRowIndex;
-            if (counts.Old == 0 && counts.New == 0 && !marked) return;
+            if (numbers.Old.Count == 0 && numbers.New.Count == 0 && !marked) return;
 
             using (var accent = new SolidBrush(_theme.MemoAccent))
             {
-                if (counts.Old > 0 && _oldContentBounds.Width > 0)
+                if (numbers.Old.Count > 0 && _oldContentBounds.Width > 0)
                     graphics.FillRectangle(accent, _oldContentBounds.X, y, MemoAccentWidth, RowHeight);
-                if (counts.New > 0 && _newContentBounds.Width > 0)
+                if (numbers.New.Count > 0 && _newContentBounds.Width > 0)
                     graphics.FillRectangle(accent, _newContentBounds.X, y, MemoAccentWidth, RowHeight);
             }
 
@@ -898,8 +912,10 @@ internal sealed class SideBySideDiffView : UserControl
             }
 
             if (!IsFirstVisualLineOfDiffRow(visualRowIndex)) return;
-            DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: true), counts.Old);
-            DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: false), counts.New);
+            for (var index = 0; index < numbers.Old.Count; index++)
+                DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: true, index), numbers.Old[index]);
+            for (var index = 0; index < numbers.New.Count; index++)
+                DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: false, index), numbers.New[index]);
         }
 
         private void DrawMemoAdd(Graphics g,int y,int visual,VisualDiffRow row)
@@ -913,7 +929,8 @@ internal sealed class SideBySideDiffView : UserControl
         private Rectangle GetMemoAddBounds(VisualDiffRow row,int y,bool old)
         {
             if(old?row.OldImaginary:row.NewImaginary)return Rectangle.Empty;var cell=old?_oldContentBounds:_newContentBounds;
-            var right=cell.Right-MemoFlagRightMargin-(GetMemoCount(row.DiffRowIndex,old)>0?MemoFlagWidth+5:0);
+            var flagCount=GetMemoCount(row.DiffRowIndex,old);
+            var right=cell.Right-MemoFlagRightMargin-(flagCount>0?flagCount*(MemoFlagWidth+3)+2:0);
             return new Rectangle(right-MemoAddSize,y+Math.Max(1,(RowHeight-MemoAddSize)/2),MemoAddSize,MemoAddSize);
         }
 
@@ -931,9 +948,9 @@ internal sealed class SideBySideDiffView : UserControl
             var y=visual*RowHeight-ScrollOffset;if(!GetMemoAddBounds(row,y,t.Side==DiffMemoSide.Old).Contains(p))return false;target=t;return true;
         }
 
-        private void DrawMemoFlag(Graphics graphics, Rectangle bounds, int count)
+        private void DrawMemoFlag(Graphics graphics, Rectangle bounds, int number)
         {
-            if (count == 0 || bounds.Width <= 0) return;
+            if (bounds.Width <= 0) return;
 
             var smoothing = graphics.SmoothingMode;
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -943,19 +960,22 @@ internal sealed class SideBySideDiffView : UserControl
                 graphics.FillPath(fill, path);
             }
             graphics.SmoothingMode = smoothing;
-            TextRenderer.DrawText(graphics, count > 9 ? "9+" : count.ToString(), _memoFlagFont, bounds, _theme.MemoFlagText,
+            TextRenderer.DrawText(graphics, number.ToString(), _memoFlagFont, bounds, _theme.MemoFlagText,
                 TextFlags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
         /// <summary>Each column carries its own flag; an empty cell never gets one.</summary>
-        private Rectangle GetMemoFlagBounds(VisualDiffRow row, int y, bool oldSide)
+        private Rectangle GetMemoFlagBounds(VisualDiffRow row, int y, bool oldSide, int flagIndex)
         {
             if (oldSide ? row.OldImaginary : row.NewImaginary) return Rectangle.Empty;
             var bounds = oldSide ? _oldContentBounds : _newContentBounds;
             if (bounds.Width <= LineNumberWidth + MemoFlagWidth + MemoFlagRightMargin) return Rectangle.Empty;
+            var numbers = GetMemoNumbers(row.DiffRowIndex, oldSide);
+            if (flagIndex < 0 || flagIndex >= numbers.Count) return Rectangle.Empty;
             var height = Math.Max(12, RowHeight - 8);
+            var flagsToRight = numbers.Count - flagIndex - 1;
             return new Rectangle(
-                bounds.Right - MemoFlagWidth - MemoFlagRightMargin,
+                bounds.Right - MemoFlagWidth - MemoFlagRightMargin - (flagsToRight * (MemoFlagWidth + 3)),
                 y + ((RowHeight - height) / 2),
                 MemoFlagWidth,
                 height);
@@ -973,11 +993,15 @@ internal sealed class SideBySideDiffView : UserControl
 
             foreach (var oldSide in new[] { true, false })
             {
-                if (GetMemoCount(row.DiffRowIndex, oldSide) == 0) continue;
-                var flag = GetMemoFlagBounds(row, y, oldSide);
-                if (flag.Width <= 0 || !flag.Contains(location)) continue;
-                target = new DiffMemoTarget(row.DiffRowIndex, oldSide ? DiffMemoSide.Old : DiffMemoSide.New);
-                return true;
+                var numbers = GetMemoNumbers(row.DiffRowIndex, oldSide);
+                for (var index = 0; index < numbers.Count; index++)
+                {
+                    var flag = GetMemoFlagBounds(row, y, oldSide, index);
+                    if (flag.Width <= 0 || !flag.Contains(location)) continue;
+                    target = new DiffMemoTarget(row.DiffRowIndex,
+                        oldSide ? DiffMemoSide.Old : DiffMemoSide.New, numbers[index]);
+                    return true;
+                }
             }
             return false;
         }
