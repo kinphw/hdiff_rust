@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
@@ -64,6 +65,7 @@ internal sealed class MainForm : Form
     private DocumentDiff? _currentDiff;
     private (DocumentSource? Old, DocumentSource? New)? _memoSourcePair;
     private string _memoAuthor = Environment.UserName;
+    private bool _memosDirty;
 
     private static readonly DiffFontSizeOption[] FontSizeOptions =
     {
@@ -103,6 +105,8 @@ internal sealed class MainForm : Form
         _settingsButton.Paint += PaintSettingsGlyph;
         _oldFile.SourceChanged += (_, _) => HandleSourceChanged(_oldFile, oldSide: true);
         _newFile.SourceChanged += (_, _) => HandleSourceChanged(_newFile, oldSide: false);
+        _oldFile.SourceChanging += ConfirmSourceChangeWithMemos;
+        _newFile.SourceChanging += ConfirmSourceChangeWithMemos;
 
         _sources = new TableLayoutPanel { Dock = DockStyle.Top, Height = 112, Padding = new Padding(12, 8, 12, 8), ColumnCount = 2, RowCount = 1 };
         _sources.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -178,6 +182,14 @@ internal sealed class MainForm : Form
         base.Dispose(disposing);
     }
 
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (_memosDirty && MessageBox.Show(this, "HTML로 추출하지 않은 검토 메모 또는 회신이 있습니다. 저장하지 않고 Hdiff를 닫을까요?",
+                "저장 안 된 검토 내용", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+        { e.Cancel = true; return; }
+        base.OnFormClosing(e);
+    }
+
     private async Task CompareAsync()
     {
         var oldSource = _oldFile.Source;
@@ -230,10 +242,24 @@ internal sealed class MainForm : Form
         _diffView.MemoOpenRequested += (_, target) => OpenMemosForCell(target);
         _memoStore.Changed += (_, _) => RefreshMemoSurfaces();
         _memoPanel.MemoActivated += (_, id) => NavigateToMemo(id);
-        _memoPanel.EditRequested += (_, id) => EditMemo(id);
+        _memoPanel.MemoSubmitted += (_, item) => SaveMemo(item);
         _memoPanel.DeleteRequested += (_, id) => DeleteMemo(id);
+        _memoPanel.ReplySubmitted += (_, item) => AddReply(item);
+        _memoPanel.ReplyDeleteRequested += (_, key) => DeleteReply(key);
         _memoPanel.CloseRequested += (_, _) => ShowMemoPanel(false);
+        _memoPanel.Author = _memoAuthor;
         RefreshMemoSurfaces();
+    }
+
+    private void MarkMemosDirty() { _memosDirty = true; _memoPanel.SetDirty(true); }
+
+    private void ConfirmSourceChangeWithMemos(object? sender, CancelEventArgs e)
+    {
+        if (!_memosDirty) return;
+        if (MessageBox.Show(this, "HTML로 추출하지 않은 검토 내용이 있습니다. 문서를 바꾸면 사라집니다. 계속할까요?",
+                "저장 안 된 검토 내용", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+        { e.Cancel = true; return; }
+        _memosDirty = false; _memoPanel.SetDirty(false);
     }
 
     /// <summary>
@@ -262,6 +288,7 @@ internal sealed class MainForm : Form
             ? new Dictionary<int, (int, int)>()
             : _memoStore.CountByRowSide());
         _memoPanel.SetMemos(BuildMemoRows());
+        _memoPanel.SetDirty(_memosDirty);
         _memoButton.Text = _memoStore.Count == 0 ? "검토 메모" : $"검토 메모 {_memoStore.Count}";
         _memoButton.Enabled = _currentDiff is not null;
     }
@@ -275,19 +302,21 @@ internal sealed class MainForm : Form
                 index + 1,
                 memo.Anchor.Kind,
                 memo.Anchor.Side,
+                memo.Anchor.RowIndex,
                 memo.Anchor.IsOrphaned ? string.Empty : DescribeRowPosition(_currentDiff.Rows[memo.Anchor.RowIndex]),
                 memo.Anchor.Quote,
                 memo.Text,
                 memo.Author,
                 memo.LastEditedAt.ToString("yyyy-MM-dd HH:mm"),
-                memo.Anchor.IsOrphaned))
+                memo.Anchor.IsOrphaned,
+                memo.Replies))
             .ToArray();
     }
 
     private void ShowMemoPanel(bool show)
     {
         _memoPanel.Visible = show;
-        if (show) _memoPanel.BringToFront();
+        PerformLayout();
     }
 
     private void AddMemo(SideBySideDiffView.DiffMemoTarget target)
@@ -295,46 +324,22 @@ internal sealed class MainForm : Form
         if (_currentDiff is null || target.RowIndex < 0 || target.RowIndex >= _currentDiff.Rows.Count) return;
         var row = _currentDiff.Rows[target.RowIndex];
         var side = DiffMemoAnchor.ResolveSide(row, target.Side);
-        using var dialog = new DiffMemoEditorDialog(
-            DescribeRowCaption(row, side),
-            (side == DiffMemoSide.Old ? row.OldText : row.NewText) ?? string.Empty,
-            _memoAuthor,
-            string.Empty,
-            editing: false,
-            CurrentTheme());
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-        _memoAuthor = dialog.Author;
-        var memo = _memoStore.Add(_currentDiff, target.RowIndex, side, dialog.Author, dialog.MemoText, DateTimeOffset.Now);
         ShowMemoPanel(true);
-        _memoPanel.SelectMemo(memo.Id);
-        NavigateToMemo(memo.Id);
+        _memoPanel.Author = _memoAuthor;
+        _memoPanel.BeginAdd(new DiffMemoDraftTarget(target.RowIndex,row.Kind,side,DescribeRowPosition(row),
+            (side == DiffMemoSide.Old ? row.OldText : row.NewText) ?? string.Empty));
+        _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(target.RowIndex,side);
     }
 
-    private void EditMemo(string id)
+    private void SaveMemo(DiffMemoSubmission item)
     {
-        if (_currentDiff is null || _memoStore.Find(id) is not { } memo) return;
-        using var dialog = new DiffMemoEditorDialog(
-            memo.Anchor.IsOrphaned
-                ? "이 문단은 현재 비교 결과에 없습니다."
-                : DescribeRowCaption(_currentDiff.Rows[memo.Anchor.RowIndex], memo.Anchor.Side),
-            memo.Anchor.Quote,
-            memo.Author,
-            memo.Text,
-            editing: true,
-            CurrentTheme());
-
-        var result = dialog.ShowDialog(this);
-        if (result == DialogResult.Abort)
-        {
-            DeleteMemo(id, confirm: false);
-            return;
-        }
-        if (result != DialogResult.OK) return;
-
-        _memoAuthor = dialog.Author;
-        _memoStore.Update(id, dialog.Author, dialog.MemoText, DateTimeOffset.Now);
+        if (_currentDiff is null) return;
+        _memoAuthor=item.Author; _memoPanel.Author=_memoAuthor; string id;
+        if(item.MemoId is { } memoId){if(!_memoStore.Update(memoId,item.Author,item.Text,DateTimeOffset.Now))return;id=memoId;}
+        else { id=_memoStore.Add(_currentDiff,item.Target.RowIndex,item.Target.Side,item.Author,item.Text,DateTimeOffset.Now).Id; }
+        MarkMemosDirty();
         _memoPanel.SelectMemo(id);
+        NavigateToMemo(id);
     }
 
     private void DeleteMemo(string id, bool confirm = true)
@@ -343,6 +348,20 @@ internal sealed class MainForm : Form
         if (confirm && MessageBox.Show(this, "선택한 검토 메모를 삭제할까요?", "Hdiff",
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
         _memoStore.Remove(id);
+        MarkMemosDirty();
+    }
+
+    private void AddReply(DiffMemoReplySubmission item)
+    {
+        _memoAuthor=item.Author;_memoPanel.Author=_memoAuthor;
+        _memoStore.AddReply(item.MemoId,item.Author,item.Text,DateTimeOffset.Now);MarkMemosDirty();
+        _memoPanel.SelectMemo(item.MemoId);NavigateToMemo(item.MemoId);
+    }
+
+    private void DeleteReply(DiffMemoReplyKey key)
+    {
+        if(MessageBox.Show(this,"이 회신을 삭제할까요?","Hdiff",MessageBoxButtons.OKCancel,MessageBoxIcon.Question)!=DialogResult.OK)return;
+        if(!_memoStore.RemoveReply(key.MemoId,key.ReplyId))return;MarkMemosDirty();_memoPanel.SelectMemo(key.MemoId);
     }
 
     private void OpenMemosForCell(SideBySideDiffView.DiffMemoTarget target)
@@ -353,36 +372,20 @@ internal sealed class MainForm : Form
         if (memos.Length == 0) return;
         ShowMemoPanel(true);
         _memoPanel.SelectMemo(memos[0].Id);
-        _diffView.PinnedDiffRow = target.RowIndex;
+        _diffView.PinnedMemoTarget = target;
     }
 
     private void NavigateToMemo(string id)
     {
         if (_memoStore.Find(id) is not { } memo || memo.Anchor.IsOrphaned)
         {
-            _diffView.PinnedDiffRow = null;
+            _diffView.PinnedMemoTarget = null;
             return;
         }
         // The pin stays while the memo stays selected, so the list row and the
         // paragraph on screen visibly belong together.
-        _diffView.PinnedDiffRow = memo.Anchor.RowIndex;
+        _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(memo.Anchor.RowIndex,memo.Anchor.Side);
         _diffView.RevealDiffRow(memo.Anchor.RowIndex);
-    }
-
-    private HdiffThemePalette CurrentTheme() =>
-        HdiffThemes.Get(((DiffThemeOption)_themePicker.SelectedItem!).Theme);
-
-    private static string DescribeRowCaption(DiffRow row, DiffMemoSide side)
-    {
-        var kind = row.Kind switch
-        {
-            DiffChangeKind.Inserted => "추가",
-            DiffChangeKind.Deleted => "삭제",
-            DiffChangeKind.Modified => "수정",
-            _ => "동일",
-        };
-        var column = side == DiffMemoSide.Old ? "변경 전" : "변경 후";
-        return $"{column} · {kind} · {DescribeRowPosition(row)}";
     }
 
     private static string DescribeRowPosition(DiffRow row) =>
@@ -644,6 +647,7 @@ internal sealed class MainForm : Form
                 GeneratedAt: DateTimeOffset.Now),
                 _memoStore.Memos);
             await File.WriteAllTextAsync(dialog.FileName, html, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            _memosDirty=false; _memoPanel.SetDirty(false);
             ShowHtmlExportCompleted(dialog.FileName);
         }
         catch (Exception ex)

@@ -257,6 +257,10 @@ Expect(memoStore.ForRow(insertedRowIndex).Single().Anchor.Side == DiffMemoSide.N
 var oldSideMemo = memoStore.ForRow(modifiedRowIndex).Single(memo => memo.Anchor.Side == DiffMemoSide.Old);
 Expect(oldSideMemo.Anchor.Quote == exportDiff.Rows[modifiedRowIndex].OldText,
     "변경 전에 단 메모는 변경 전 문단을 인용해야 합니다.");
+var appReply=memoStore.AddReply(oldSideMemo.Id,"이회신","본체에서 추가한 회신입니다.",memoTime.AddMinutes(7));
+Expect(memoStore.Find(oldSideMemo.Id)!.Replies.Single()==appReply,"본체 회신은 코어 데이터로 보존되어야 합니다.");
+Expect(memoStore.RemoveReply(oldSideMemo.Id,appReply.Id),"회신을 삭제할 수 있어야 합니다.");
+memoStore.AddReply(oldSideMemo.Id,"이회신","본체에서 추가한 회신입니다.",memoTime.AddMinutes(7));
 
 static DocumentBlock MemoBlock(string text) => new(DocumentBlockKind.Paragraph, text);
 var anchorBefore = new ParsedDocument("anchor-before", new[] { MemoBlock("가 조항"), MemoBlock("나 조항"), MemoBlock("다 조항") }, "test", Array.Empty<string>());
@@ -304,6 +308,9 @@ Expect(exportedHtmlWithMemos.Contains("class=\"memo-reply-add\"", StringComparis
     && exportedHtmlWithMemos.Contains("root.outerHTML", StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("data-reply-round=\"0\"", StringComparison.Ordinal),
     "받는 사람이 회신을 쓰고 그 상태 그대로 다시 저장할 수 있어야 합니다.");
+Expect(exportedHtmlWithMemos.Contains("data-reply-id=",StringComparison.Ordinal)
+    && exportedHtmlWithMemos.Contains("본체에서 추가한 회신입니다.",StringComparison.Ordinal),
+    "본체에서 작성한 회신도 공유 HTML에 포함되어야 합니다.");
 Expect(exportedHtmlWithMemos.Contains("id=\"memo-add\"", StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("function createMemo(", StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("function renumber(", StringComparison.Ordinal),
@@ -344,6 +351,20 @@ foreach (var loadTimeBinding in new[]
 Expect(!exportedHtmlWithMemos.Contains("<link ", StringComparison.OrdinalIgnoreCase)
     && !exportedHtmlWithMemos.Contains(" src=", StringComparison.OrdinalIgnoreCase),
     "메모가 담긴 공유 HTML도 외부 파일에 의존하지 않아야 합니다.");
+var memoPanelSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","DiffMemoListPanel.cs"));
+var mainFormSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","MainForm.cs"));
+var diffViewSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","SideBySideDiffView.cs"));
+Expect(memoPanelSource.Contains("Dock = DockStyle.Right",StringComparison.Ordinal)
+    && memoPanelSource.Contains("PanelWidth = 320",StringComparison.Ordinal)
+    && memoPanelSource.Contains("CreateCard",StringComparison.Ordinal)
+    && !memoPanelSource.Contains("new ListView",StringComparison.Ordinal),
+    "본체 메모는 오른쪽 320px 카드 패널이어야 합니다.");
+Expect(mainFormSource.Contains("_memoPanel.BeginAdd",StringComparison.Ordinal)
+    && !mainFormSource.Contains("new DiffMemoEditorDialog",StringComparison.Ordinal)
+    && mainFormSource.Contains("OnFormClosing",StringComparison.Ordinal),
+    "메모 작성은 인라인이어야 하며 미저장 종료 경고가 있어야 합니다.");
+Expect(diffViewSource.Contains("DrawMemoAdd",StringComparison.Ordinal)&&diffViewSource.Contains("DrawMemoLink",StringComparison.Ordinal),
+    "행 호버 추가 버튼과 선택 메모 연결선이 있어야 합니다.");
 var exportedMemoHtmlPath = Path.Combine(fixtureDir, "standalone-diff-preview-memos.html");
 File.WriteAllText(exportedMemoHtmlPath, exportedHtmlWithMemos, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 

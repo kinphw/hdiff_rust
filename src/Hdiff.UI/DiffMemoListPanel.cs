@@ -3,278 +3,203 @@ using Hdiff.Core.Review;
 
 namespace Hdiff.UI;
 
-internal sealed record DiffMemoRow(
-    string Id,
-    int Number,
-    DiffChangeKind Kind,
-    DiffMemoSide Side,
-    string Position,
-    string Quote,
-    string Text,
-    string Author,
-    string When,
-    bool Orphaned);
+internal sealed record DiffMemoRow(string Id, int Number, DiffChangeKind Kind, DiffMemoSide Side, int RowIndex,
+    string Position, string Quote, string Text, string Author, string When, bool Orphaned,
+    IReadOnlyList<DiffMemoReply> Replies);
+internal sealed record DiffMemoDraftTarget(int RowIndex, DiffChangeKind Kind, DiffMemoSide Side, string Position, string Quote);
+internal sealed record DiffMemoSubmission(string? MemoId, DiffMemoDraftTarget Target, string Author, string Text);
+internal sealed record DiffMemoReplySubmission(string MemoId, string Author, string Text);
+internal sealed record DiffMemoReplyKey(string MemoId, string ReplyId);
 
-/// <summary>
-/// The review pane: every memo of the current comparison in reading order.
-/// Selecting a memo scrolls the comparison to its paragraph, the way the Word
-/// review pane follows the document.
-/// </summary>
+/// <summary>HTML review UX mirrored as a native right-side card and thread pane.</summary>
 internal sealed class DiffMemoListPanel : Panel
 {
-    private readonly Label _title = new()
-    {
-        Dock = DockStyle.Fill,
-        Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-        Padding = new Padding(12, 0, 0, 0),
-        TextAlign = ContentAlignment.MiddleLeft,
-    };
-    private readonly Button _editButton = new() { Text = "편집", AutoSize = true, Enabled = false };
-    private readonly Button _deleteButton = new() { Text = "삭제", AutoSize = true, Enabled = false };
-    private readonly Button _closeButton = new() { Text = "닫기", AutoSize = true };
-    private readonly FlowLayoutPanel _actions = new()
-    {
-        AutoSize = true,
-        Dock = DockStyle.Right,
-        FlowDirection = FlowDirection.LeftToRight,
-        Padding = new Padding(0, 3, 8, 0),
-        WrapContents = false,
-    };
-    private readonly Panel _header = new() { Dock = DockStyle.Top, Height = 30 };
-    private readonly ListView _list = new()
-    {
-        Dock = DockStyle.Fill,
-        FullRowSelect = true,
-        HeaderStyle = ColumnHeaderStyle.Nonclickable,
-        HideSelection = false,
-        MultiSelect = false,
-        OwnerDraw = true,
-        View = View.Details,
-    };
-    private readonly Font _cellFont = new("맑은 고딕", 9f);
-    private readonly Font _headerFont = new("Segoe UI", 8.5f, FontStyle.Bold);
+    private const int PanelWidth = 320;
+    private readonly Label _title = new() { AutoSize = true, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Margin = new Padding(0,3,0,0) };
+    private readonly Label _count = new() { AutoSize = true, Font = new Font("Segoe UI", 8f, FontStyle.Bold), Padding = new Padding(5,1,5,1), Margin = new Padding(6,2,0,0) };
+    private readonly Label _dirty = new() { AutoSize = true, Text = "저장 안 됨", Font = new Font("Segoe UI",8f,FontStyle.Bold), Padding = new Padding(5,1,5,1), Margin = new Padding(6,2,0,0), Visible = false };
+    private readonly Button _close = new() { Text = "×", AutoSize = false, Size = new Size(24,23), Margin = new Padding(3,0,0,0) };
+    private readonly TextBox _author = new() { Dock = DockStyle.Top, MaxLength = 60, PlaceholderText = "내 이름 (메모·회신 작성자)" };
+    private readonly Label _hint = new() { AutoSize = true, Dock = DockStyle.Top, MaximumSize = new Size(285,0), Padding = new Padding(0,6,0,0), Text = "비교 행의 +로 메모를 추가합니다. Ctrl+Enter로 등록할 수 있습니다." };
+    private readonly Panel _header = new() { Dock = DockStyle.Top, Height = 104, Padding = new Padding(12,7,8,7) };
+    private readonly FlowLayoutPanel _list = new() { AutoScroll = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(8), WrapContents = false };
+    private IReadOnlyList<DiffMemoRow> _memos = Array.Empty<DiffMemoRow>();
     private HdiffThemePalette _theme = HdiffThemes.Light;
-    private bool _suppressSelectionEvents;
+    private string? _selectedId;
+    private Control? _editor;
 
     public DiffMemoListPanel()
     {
-        Dock = DockStyle.Bottom;
-        Height = 168;
+        Dock = DockStyle.Right;
+        Width = PanelWidth;
+        MinimumSize = new Size(280,0);
         Visible = false;
-
-        _list.Columns.Add("#", 34, HorizontalAlignment.Right);
-        _list.Columns.Add("대상", 48, HorizontalAlignment.Center);
-        _list.Columns.Add("위치", 96);
-        _list.Columns.Add("구분", 48, HorizontalAlignment.Center);
-        _list.Columns.Add("대상 문단", 300);
-        _list.Columns.Add("메모", 360);
-        _list.Columns.Add("작성자", 92);
-        _list.Columns.Add("작성 시각", 116);
-
-        _list.DrawColumnHeader += DrawColumnHeader;
-        _list.DrawItem += (_, e) => e.DrawDefault = false;
-        _list.DrawSubItem += DrawSubItem;
-        _list.SelectedIndexChanged += (_, _) =>
-        {
-            UpdateActionState();
-            if (_suppressSelectionEvents) return;
-            if (SelectedId is { } id) MemoActivated?.Invoke(this, id);
-        };
-        _list.MouseDoubleClick += (_, _) =>
-        {
-            if (SelectedId is { } id) EditRequested?.Invoke(this, id);
-        };
-        _list.KeyDown += (_, e) =>
-        {
-            if (SelectedId is not { } id) return;
-            if (e.KeyCode == Keys.Delete) DeleteRequested?.Invoke(this, id);
-            else if (e.KeyCode == Keys.Enter) EditRequested?.Invoke(this, id);
-            else return;
-            e.Handled = true;
-        };
-
-        _editButton.Click += (_, _) =>
-        {
-            if (SelectedId is { } id) EditRequested?.Invoke(this, id);
-        };
-        _deleteButton.Click += (_, _) =>
-        {
-            if (SelectedId is { } id) DeleteRequested?.Invoke(this, id);
-        };
-        _closeButton.Click += (_, _) => CloseRequested?.Invoke(this, EventArgs.Empty);
-
-        _actions.Controls.AddRange(new Control[] { _editButton, _deleteButton, _closeButton });
-        // Filling title first, right-docked actions after: WinForms lays docked
-        // controls out from the last added to the first.
-        _header.Controls.Add(_title);
-        _header.Controls.Add(_actions);
-        Controls.Add(_list);
-        Controls.Add(_header);
+        var titleRow = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 4 };
+        titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+        titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        titleRow.Controls.Add(_title,0,0); titleRow.Controls.Add(_count,1,0);
+        titleRow.Controls.Add(_dirty,2,0); titleRow.Controls.Add(_close,3,0);
+        _header.Controls.Add(_hint); _header.Controls.Add(_author); _header.Controls.Add(titleRow);
+        _close.Click += (_,_) => CloseRequested?.Invoke(this,EventArgs.Empty);
+        _list.Resize += (_,_) => ResizeChildren();
+        Controls.Add(_list); Controls.Add(_header);
         ApplyTheme(_theme);
     }
 
     public event EventHandler<string>? MemoActivated;
-    public event EventHandler<string>? EditRequested;
+    public event EventHandler<DiffMemoSubmission>? MemoSubmitted;
     public event EventHandler<string>? DeleteRequested;
+    public event EventHandler<DiffMemoReplySubmission>? ReplySubmitted;
+    public event EventHandler<DiffMemoReplyKey>? ReplyDeleteRequested;
     public event EventHandler? CloseRequested;
-
-    public string? SelectedId => _list.SelectedItems.Count == 0 ? null : (string)_list.SelectedItems[0].Tag!;
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _cellFont.Dispose();
-            _headerFont.Dispose();
-        }
-        base.Dispose(disposing);
-    }
+    public string Author { get => string.IsNullOrWhiteSpace(_author.Text) ? "검토자" : _author.Text.Trim(); set => _author.Text = value; }
 
     public void SetMemos(IReadOnlyList<DiffMemoRow> memos)
     {
-        var previouslySelected = SelectedId;
-        _suppressSelectionEvents = true;
-        try
-        {
-            _list.BeginUpdate();
-            _list.Items.Clear();
-            foreach (var memo in memos)
-            {
-                var item = new ListViewItem(memo.Number.ToString()) { Tag = memo.Id };
-                item.SubItems.Add(memo.Side == DiffMemoSide.Old ? "변경 전" : "변경 후");
-                item.SubItems.Add(memo.Orphaned ? "위치 없음" : memo.Position);
-                item.SubItems.Add(KindLabel(memo.Kind));
-                item.SubItems.Add(Flatten(memo.Quote));
-                item.SubItems.Add(Flatten(memo.Text));
-                item.SubItems.Add(memo.Author);
-                item.SubItems.Add(memo.When);
-                _list.Items.Add(item);
-                if (memo.Id == previouslySelected) item.Selected = true;
-            }
-            _list.EndUpdate();
-        }
-        finally
-        {
-            _suppressSelectionEvents = false;
-        }
-
-        _title.Text = memos.Count == 0 ? "검토 메모" : $"검토 메모 {memos.Count}";
-        UpdateActionState();
+        _memos = memos;
+        if (_selectedId is not null && memos.All(m => m.Id != _selectedId)) _selectedId = null;
+        Rebuild();
     }
 
-    /// <summary>Selects a memo without navigating again, for flag clicks in the comparison.</summary>
+    public void SetDirty(bool dirty) => _dirty.Visible = dirty;
+
+    public void BeginAdd(DiffMemoDraftTarget target)
+    {
+        CancelEditor(); _selectedId = null;
+        ShowMemoEditor(null,target,string.Empty,0);
+    }
+
+    public void BeginEdit(string id)
+    {
+        var memo = _memos.FirstOrDefault(m => m.Id == id);
+        if (memo is null) return;
+        CancelEditor(); _selectedId = id;
+        ShowMemoEditor(id,new DiffMemoDraftTarget(memo.RowIndex,memo.Kind,memo.Side,memo.Position,memo.Quote),
+            memo.Text,Math.Max(0,IndexOf(id)+1));
+    }
+
     public void SelectMemo(string id)
     {
-        var item = _list.Items.Cast<ListViewItem>().FirstOrDefault(candidate => (string)candidate.Tag! == id);
-        if (item is null) return;
-        _suppressSelectionEvents = true;
-        try
-        {
-            item.Selected = true;
-            item.Focused = true;
-            item.EnsureVisible();
-        }
-        finally
-        {
-            _suppressSelectionEvents = false;
-        }
-        UpdateActionState();
+        _selectedId = id; Control? selected = null;
+        foreach (Control control in _list.Controls)
+            if (control.Tag is string memoId) { control.Invalidate(); if (memoId == id) selected = control; }
+        if (selected is not null) _list.ScrollControlIntoView(selected);
     }
 
     public void ApplyTheme(HdiffThemePalette theme)
     {
-        _theme = theme;
-        BackColor = theme.SurfaceBack;
-        _header.BackColor = theme.HeaderBack;
-        _title.BackColor = theme.HeaderBack;
-        _title.ForeColor = theme.Text;
-        _actions.BackColor = theme.HeaderBack;
-        _list.BackColor = theme.CanvasBack;
-        _list.ForeColor = theme.Text;
-        _list.BorderStyle = BorderStyle.None;
-        foreach (var button in new[] { _editButton, _deleteButton, _closeButton })
-        {
-            button.FlatStyle = FlatStyle.Flat;
-            button.FlatAppearance.BorderColor = theme.ButtonBorder;
-            button.FlatAppearance.MouseOverBackColor = theme.HeaderBack;
-            button.BackColor = theme.ButtonBack;
-            button.ForeColor = theme.ButtonText;
-            button.Margin = new Padding(4, 0, 0, 0);
-        }
-        _list.Invalidate();
-        Invalidate();
+        _theme = theme; BackColor = theme.SurfaceBack; _header.BackColor = theme.HeaderBack; _list.BackColor = theme.SurfaceBack;
+        _title.ForeColor = theme.Text; _count.BackColor = theme.MemoSurfaceBack; _count.ForeColor = theme.MemoAccent;
+        _dirty.ForeColor = theme.RemovedText; _hint.ForeColor = theme.MutedText;
+        _author.BackColor = theme.CanvasBack; _author.ForeColor = theme.Text; _author.BorderStyle = BorderStyle.FixedSingle;
+        StyleButton(_close,false); Rebuild();
     }
 
-    private void UpdateActionState()
+    private void Rebuild()
     {
-        var hasSelection = _list.SelectedItems.Count > 0;
-        _editButton.Enabled = hasSelection;
-        _deleteButton.Enabled = hasSelection;
+        CancelEditor(); _list.SuspendLayout(); _list.Controls.Clear();
+        foreach (var memo in _memos) _list.Controls.Add(CreateCard(memo));
+        if (_memos.Count == 0) _list.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(270,0), Padding = new Padding(10),
+            BackColor = _theme.SurfaceBack, ForeColor = _theme.MutedText, Text = "아직 검토 메모가 없습니다. 비교 행 위의 +를 눌러 메모를 추가하세요." });
+        _title.Text = "검토 메모"; _count.Text = _memos.Count.ToString(); ResizeChildren(); _list.ResumeLayout();
     }
 
-    private void DrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+    private Control CreateCard(DiffMemoRow memo)
     {
-        using var background = new SolidBrush(_theme.HeaderBack);
-        e.Graphics.FillRectangle(background, e.Bounds);
-        using var separator = new Pen(_theme.Border);
-        e.Graphics.DrawLine(separator, e.Bounds.Right - 1, e.Bounds.Top + 4, e.Bounds.Right - 1, e.Bounds.Bottom - 5);
-        e.Graphics.DrawLine(separator, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-        TextRenderer.DrawText(e.Graphics, e.Header!.Text, _headerFont,
-            Rectangle.Inflate(e.Bounds, -6, 0), _theme.MutedText,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        var card = Table(_theme.MemoSurfaceBack,new Padding(10,8,8,8));
+        card.Width = CardWidth(); card.Margin = new Padding(0,0,0,8); card.Tag = memo.Id;
+        card.Cursor = memo.Orphaned ? Cursors.Default : Cursors.Hand;
+        card.Paint += (_,e) => PaintCard(e.Graphics,card.ClientRectangle,memo);
+        var head = new FlowLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, Dock = DockStyle.Fill, WrapContents = true };
+        head.Controls.Add(Chip(memo.Number.ToString(),_theme.MemoAccent,_theme.MemoFlagText));
+        head.Controls.Add(Chip(memo.Side == DiffMemoSide.Old ? "전" : "후",
+            memo.Side == DiffMemoSide.Old ? _theme.DeletedLineBack : _theme.InsertedLineBack,
+            memo.Side == DiffMemoSide.Old ? _theme.RemovedText : _theme.AddedText));
+        head.Controls.Add(Chip(KindLabel(memo.Kind),KindBack(memo.Kind),KindFore(memo.Kind)));
+        head.Controls.Add(new Label { AutoSize = true, BackColor = _theme.MemoSurfaceBack, ForeColor = _theme.MutedText,
+            Font = new Font("Segoe UI",7.5f), Margin = new Padding(4,3,0,0), Text = memo.Orphaned ? "위치 없음" : memo.Position });
+        Add(card,head);
+        var quote = Wrap(Shorten(Flatten(memo.Quote),160),_theme.MemoSurfaceBack,_theme.MutedText,8.5f,260);
+        quote.Margin = new Padding(0,7,0,0); quote.Padding = new Padding(7,3,0,3);
+        quote.Paint += (_,e) => { using var p = new Pen(_theme.Border,2); e.Graphics.DrawLine(p,1,1,1,quote.Height-2); };
+        Add(card,quote);
+        var body = Wrap(memo.Text,_theme.MemoSurfaceBack,_theme.Text,9f,260); body.Margin = new Padding(0,7,0,0); Add(card,body);
+        var foot = new TableLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, ColumnCount = 2, Dock = DockStyle.Fill, Margin = new Padding(0,7,0,0) };
+        foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50)); foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));
+        foot.Controls.Add(Meta(memo.Author,ContentAlignment.MiddleLeft),0,0); foot.Controls.Add(Meta(memo.When,ContentAlignment.MiddleRight),1,0); Add(card,foot);
+        foreach (var reply in memo.Replies) Add(card,CreateReply(memo.Id,reply));
+        var tools = new FlowLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, Margin = new Padding(0,8,0,0), WrapContents = false };
+        var replyButton = ActionButton("회신"); var edit = ActionButton("편집"); var delete = ActionButton("삭제");
+        replyButton.Click += (_,_) => BeginReply(memo.Id); edit.Click += (_,_) => BeginEdit(memo.Id);
+        delete.Click += (_,_) => DeleteRequested?.Invoke(this,memo.Id);
+        tools.Controls.AddRange(new Control[] { replyButton,edit,delete }); Add(card,tools);
+        if (!memo.Orphaned) AttachActivation(card,memo.Id);
+        return card;
     }
 
-    private void DrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    private Control CreateReply(string memoId, DiffMemoReply reply)
     {
-        var selected = e.Item!.Selected;
-        var backColor = selected ? _theme.MemoSurfaceBack : _theme.CanvasBack;
-        using (var background = new SolidBrush(backColor))
-        {
-            e.Graphics.FillRectangle(background, e.Bounds);
-        }
-        if (selected && e.ColumnIndex == 0)
-        {
-            using var marker = new SolidBrush(_theme.MemoAccent);
-            e.Graphics.FillRectangle(marker, e.Bounds.X, e.Bounds.Y, 3, e.Bounds.Height);
-        }
-
-        var foreColor = e.ColumnIndex switch
-        {
-            1 => SideColor(e.Item.SubItems[1].Text),
-            3 => KindColor(e.Item.SubItems[3].Text),
-            4 => _theme.MutedText,
-            _ => _theme.Text,
-        };
-        var alignment = e.ColumnIndex switch
-        {
-            0 => TextFormatFlags.Right,
-            1 or 3 => TextFormatFlags.HorizontalCenter,
-            _ => TextFormatFlags.Left,
-        };
-        TextRenderer.DrawText(e.Graphics, e.SubItem!.Text, _cellFont,
-            Rectangle.Inflate(e.Bounds, -5, 0), foreColor,
-            alignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        var color = HdiffThemes.MemoAuthorColor(_theme,reply.Author);
+        var panel = Table(_theme.SurfaceBack,new Padding(9,6,6,6)); panel.Dock = DockStyle.Fill; panel.Margin = new Padding(0,8,0,0);
+        panel.Paint += (_,e) => { using var b = new SolidBrush(color); e.Graphics.FillRectangle(b,0,0,3,panel.Height); };
+        var head = new TableLayoutPanel { AutoSize = true, BackColor = _theme.SurfaceBack, ColumnCount = 3, Dock = DockStyle.Fill };
+        head.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100)); head.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        head.Controls.Add(new Label { AutoSize = true, BackColor = _theme.SurfaceBack, ForeColor = color, Font = new Font("Segoe UI",7.5f,FontStyle.Bold), Text = reply.Author },0,0);
+        head.Controls.Add(new Label { AutoSize = true, BackColor = _theme.SurfaceBack, ForeColor = _theme.MutedText, Font = new Font("Segoe UI",7.5f), Text = reply.CreatedAt.ToString("yyyy-MM-dd HH:mm") },1,0);
+        var remove = new Button { Text = "×", AutoSize = false, Size = new Size(18,18), Margin = Padding.Empty }; StyleButton(remove,false);
+        remove.Click += (_,_) => ReplyDeleteRequested?.Invoke(this,new DiffMemoReplyKey(memoId,reply.Id)); head.Controls.Add(remove,2,0); Add(panel,head);
+        var text = Wrap(reply.Text,_theme.SurfaceBack,color,8.5f,245); text.Margin = new Padding(0,4,0,0); Add(panel,text);
+        return panel;
     }
 
-    private Color SideColor(string label) => label == "변경 전" ? _theme.RemovedText : _theme.AddedText;
-
-    private Color KindColor(string label) => label switch
+    private void ShowMemoEditor(string? memoId, DiffMemoDraftTarget target, string text, int index)
     {
-        "추가" => _theme.AddedText,
-        "삭제" => _theme.RemovedText,
-        _ => _theme.MutedText,
-    };
+        var shell = EditorShell(memoId is null ? "새 검토 메모" : "검토 메모 편집",target.Quote);
+        var area = TextArea(text,"메모 내용을 입력하세요."); Add(shell,area);
+        void Commit() { var body=area.Text.Trim(); if(body.Length==0)return; var s=new DiffMemoSubmission(memoId,target,Author,body); CancelEditor(); MemoSubmitted?.Invoke(this,s); }
+        Add(shell,EditorButtons(Commit)); WireKeys(area,Commit); InsertEditor(shell,index); area.Focus(); area.SelectionStart=area.TextLength;
+    }
 
-    private static string KindLabel(DiffChangeKind kind) => kind switch
+    private void BeginReply(string memoId)
     {
-        DiffChangeKind.Inserted => "추가",
-        DiffChangeKind.Deleted => "삭제",
-        DiffChangeKind.Modified => "수정",
-        _ => "동일",
-    };
+        CancelEditor(); var memo = _memos.FirstOrDefault(m => m.Id == memoId); if(memo is null)return; _selectedId=memoId;
+        var shell=EditorShell($"메모 {memo.Number}에 회신",memo.Text); var area=TextArea(string.Empty,"회신 내용을 입력하세요."); Add(shell,area);
+        void Commit(){var body=area.Text.Trim();if(body.Length==0)return;var s=new DiffMemoReplySubmission(memoId,Author,body);CancelEditor();ReplySubmitted?.Invoke(this,s);}
+        Add(shell,EditorButtons(Commit)); WireKeys(area,Commit); InsertEditor(shell,Math.Max(0,IndexOf(memoId)+1)); area.Focus();
+    }
 
-    private static string Flatten(string text) => text
-        .Replace("\r\n", " ", StringComparison.Ordinal)
-        .Replace("\n", " ", StringComparison.Ordinal)
-        .Replace("\r", " ", StringComparison.Ordinal);
+    private TableLayoutPanel EditorShell(string title,string quote)
+    {
+        var shell=Table(_theme.SurfaceBack,new Padding(9)); shell.Width=CardWidth(); shell.Margin=new Padding(0,0,0,8);
+        shell.Paint += (_,e)=>{using var p=new Pen(_theme.PrimaryActionBack);e.Graphics.DrawRectangle(p,0,0,shell.Width-1,shell.Height-1);};
+        Add(shell,new Label{AutoSize=true,BackColor=_theme.SurfaceBack,ForeColor=_theme.Text,Font=new Font("Segoe UI",8.5f,FontStyle.Bold),Text=title});
+        var q=Wrap(Shorten(Flatten(quote),160),_theme.SurfaceBack,_theme.MutedText,8f,255);q.Margin=new Padding(0,5,0,5);Add(shell,q);return shell;
+    }
+
+    private TextBox TextArea(string text,string placeholder)=>new(){AcceptsReturn=true,BackColor=_theme.CanvasBack,ForeColor=_theme.Text,Font=new Font("맑은 고딕",9f),
+        Height=82,Multiline=true,PlaceholderText=placeholder,ScrollBars=ScrollBars.Vertical,Text=text,Width=Math.Max(220,CardWidth()-20),WordWrap=true};
+    private void WireKeys(TextBox area,Action commit)=>area.KeyDown+=(_,e)=>{if(e.Control&&e.KeyCode==Keys.Enter){e.SuppressKeyPress=true;commit();}else if(e.KeyCode==Keys.Escape){e.SuppressKeyPress=true;CancelEditor();}};
+    private Control EditorButtons(Action commit){var row=new FlowLayoutPanel{AutoSize=true,BackColor=_theme.SurfaceBack,FlowDirection=FlowDirection.RightToLeft,Margin=new Padding(0,7,0,0)};
+        var save=ActionButton("등록",true);var cancel=ActionButton("취소");save.Click+=(_,_)=>commit();cancel.Click+=(_,_)=>CancelEditor();row.Controls.Add(save);row.Controls.Add(cancel);return row;}
+    private void InsertEditor(Control editor,int index){_editor=editor;_list.Controls.Add(editor);_list.Controls.SetChildIndex(editor,Math.Clamp(index,0,_list.Controls.Count-1));_list.ScrollControlIntoView(editor);}
+    private void CancelEditor(){if(_editor is null)return;_list.Controls.Remove(_editor);_editor.Dispose();_editor=null;}
+    private void AttachActivation(Control c,string id){if(c is Button or TextBox)return;c.Click+=(_,_)=>{SelectMemo(id);MemoActivated?.Invoke(this,id);};foreach(Control child in c.Controls)AttachActivation(child,id);}
+    private void PaintCard(Graphics g,Rectangle r,DiffMemoRow m){using var p=new Pen(_selectedId==m.Id?_theme.MemoAccent:_theme.Border,_selectedId==m.Id?2:1);g.DrawRectangle(p,0,0,r.Width-1,r.Height-1);using var b=new SolidBrush(m.Orphaned?_theme.MutedText:_theme.MemoAccent);g.FillRectangle(b,0,0,3,r.Height);}
+    private Label Chip(string t,Color b,Color f)=>new(){AutoSize=true,BackColor=b,ForeColor=f,Font=new Font("Segoe UI",7.5f,FontStyle.Bold),Margin=new Padding(0,0,5,0),MinimumSize=new Size(18,18),Padding=new Padding(4,2,4,2),Text=t,TextAlign=ContentAlignment.MiddleCenter};
+    private Label Meta(string t,ContentAlignment a)=>new(){AutoEllipsis=true,BackColor=_theme.MemoSurfaceBack,Dock=DockStyle.Fill,ForeColor=_theme.MutedText,Font=new Font("Segoe UI",7.5f),Text=t,TextAlign=a};
+    private Button ActionButton(string t,bool primary=false){var b=new Button{AutoSize=true,Text=t,Padding=new Padding(5,0,5,0),Margin=new Padding(0,0,5,0)};StyleButton(b,primary);return b;}
+    private void StyleButton(Button b,bool primary){b.FlatStyle=FlatStyle.Flat;b.FlatAppearance.BorderColor=primary?_theme.PrimaryActionBack:_theme.ButtonBorder;b.FlatAppearance.MouseOverBackColor=primary?_theme.PrimaryActionHover:_theme.HeaderBack;b.BackColor=primary?_theme.PrimaryActionBack:_theme.ButtonBack;b.ForeColor=primary?_theme.PrimaryActionText:_theme.ButtonText;}
+    private void ResizeChildren(){var w=CardWidth();foreach(Control c in _list.Controls)if(c is TableLayoutPanel)c.Width=w;}
+    private int CardWidth()=>Math.Max(250,_list.ClientSize.Width-_list.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth-2);
+    private int IndexOf(string id){for(var i=0;i<_list.Controls.Count;i++)if(_list.Controls[i].Tag is string x&&x==id)return i;return -1;}
+    private static TableLayoutPanel Table(Color b,Padding p){var t=new TableLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,BackColor=b,ColumnCount=1,Padding=p,RowCount=0};t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));return t;}
+    private static Label Wrap(string t,Color b,Color f,float s,int w)=>new(){AutoSize=true,BackColor=b,ForeColor=f,Font=new Font("맑은 고딕",s),MaximumSize=new Size(w,0),Text=t};
+    private static void Add(TableLayoutPanel t,Control c){var row=t.RowCount++;t.RowStyles.Add(new RowStyle(SizeType.AutoSize));t.Controls.Add(c,0,row);}
+    private Color KindBack(DiffChangeKind k)=>k switch{DiffChangeKind.Inserted=>_theme.InsertedLineBack,DiffChangeKind.Deleted=>_theme.DeletedLineBack,_=>_theme.HeaderBack};
+    private Color KindFore(DiffChangeKind k)=>k switch{DiffChangeKind.Inserted=>_theme.AddedText,DiffChangeKind.Deleted=>_theme.RemovedText,DiffChangeKind.Modified=>_theme.Text,_=>_theme.MutedText};
+    private static string KindLabel(DiffChangeKind k)=>k switch{DiffChangeKind.Inserted=>"추가",DiffChangeKind.Deleted=>"삭제",DiffChangeKind.Modified=>"수정",_=>"동일"};
+    private static string Flatten(string t)=>t.Replace("\r\n"," ",StringComparison.Ordinal).Replace("\n"," ",StringComparison.Ordinal).Replace("\r"," ",StringComparison.Ordinal);
+    private static string Shorten(string t,int n)=>t.Length<=n?t:t[..n]+"…";
 }

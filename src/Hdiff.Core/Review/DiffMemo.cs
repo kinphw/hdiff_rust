@@ -57,7 +57,10 @@ public sealed record DiffMemo(
     DateTimeOffset? UpdatedAt)
 {
     public DateTimeOffset LastEditedAt => UpdatedAt ?? CreatedAt;
+    public IReadOnlyList<DiffMemoReply> Replies { get; init; } = Array.Empty<DiffMemoReply>();
 }
+
+public sealed record DiffMemoReply(string Id, string Author, string Text, DateTimeOffset CreatedAt);
 
 /// <summary>
 /// Holds the review memos of the current comparison. Row indices shift whenever
@@ -120,6 +123,29 @@ public sealed class DiffMemoStore
         var index = _memos.FindIndex(memo => memo.Id == id);
         if (index < 0) return false;
         _memos.RemoveAt(index);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public DiffMemoReply AddReply(string memoId, string author, string text, DateTimeOffset createdAt)
+    {
+        var index = _memos.FindIndex(memo => memo.Id == memoId);
+        if (index < 0) throw new ArgumentException("회신을 달 검토 메모가 없습니다.", nameof(memoId));
+        if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("회신 내용을 입력해 주세요.", nameof(text));
+        var reply = new DiffMemoReply(Guid.NewGuid().ToString("n"),
+            string.IsNullOrWhiteSpace(author) ? "검토자" : author.Trim(), text.Trim(), createdAt);
+        _memos[index] = _memos[index] with { Replies = _memos[index].Replies.Append(reply).ToArray() };
+        Changed?.Invoke(this, EventArgs.Empty);
+        return reply;
+    }
+
+    public bool RemoveReply(string memoId, string replyId)
+    {
+        var index = _memos.FindIndex(memo => memo.Id == memoId);
+        if (index < 0) return false;
+        var replies = _memos[index].Replies.Where(reply => reply.Id != replyId).ToArray();
+        if (replies.Length == _memos[index].Replies.Count) return false;
+        _memos[index] = _memos[index] with { Replies = replies };
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }

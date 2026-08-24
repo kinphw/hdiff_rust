@@ -270,7 +270,9 @@ public static class HtmlDiffExporter
                 .Append("</span><span>").Append(Encode(memo.LastEditedAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)))
                 .Append(memo.UpdatedAt is null ? string.Empty : " (수정됨)")
                 .AppendLine("</span></footer>")
-                .AppendLine("<div class=\"memo-replies\"></div>")
+                .AppendLine("<div class=\"memo-replies\">");
+            AppendReplies(builder, memo.Replies);
+            builder.AppendLine("</div>")
                 .AppendLine("<div class=\"memo-card-tools\"><button type=\"button\" class=\"memo-reply-add\">회신</button></div>")
                 .AppendLine("</article>");
         }
@@ -279,6 +281,26 @@ public static class HtmlDiffExporter
             // Drawn over both the comparison and the panel, so one memo can be
             // tied to its paragraph the way a 한글 memo balloon has a leader line.
             .AppendLine("<svg class=\"memo-links\" id=\"memo-links\" aria-hidden=\"true\"><path id=\"memo-link-path\" /></svg>");
+    }
+
+    private static void AppendReplies(StringBuilder builder, IReadOnlyList<DiffMemoReply> replies)
+    {
+        foreach (var reply in replies)
+        {
+            builder.Append("<div class=\"memo-reply\" data-reply-id=\"").Append(Encode(reply.Id))
+                .Append("\" data-author-color=\"").Append(AuthorColorIndex(reply.Author)).AppendLine("\">")
+                .Append("<div class=\"memo-reply-head\"><span class=\"reply-author\">").Append(Encode(reply.Author))
+                .Append("</span><span>").Append(Encode(reply.CreatedAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)))
+                .AppendLine("</span></div><p class=\"reply-body\">")
+                .Append(EncodeMultiline(reply.Text)).AppendLine("</p></div>");
+        }
+    }
+
+    private static int AuthorColorIndex(string author)
+    {
+        var sum = 0;
+        foreach (var rune in author.EnumerateRunes()) sum = (sum + rune.Value) % 4096;
+        return sum % 8;
     }
 
     private static string DescribePosition(DiffRow row)

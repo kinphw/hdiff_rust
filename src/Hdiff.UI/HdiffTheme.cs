@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Hdiff.UI;
 
 internal enum HdiffThemeKind
@@ -43,6 +45,16 @@ internal sealed record HdiffThemePalette(
 
 internal static class HdiffThemes
 {
+    private static readonly Color[] LightMemoAuthors =
+    {
+        Color.FromArgb(180,83,9), Color.FromArgb(29,78,216), Color.FromArgb(185,28,28), Color.FromArgb(4,120,87),
+        Color.FromArgb(109,40,217), Color.FromArgb(190,24,93), Color.FromArgb(3,105,161), Color.FromArgb(77,124,15),
+    };
+    private static readonly Color[] DarkMemoAuthors =
+    {
+        Color.FromArgb(251,191,36), Color.FromArgb(147,197,253), Color.FromArgb(252,165,165), Color.FromArgb(110,231,183),
+        Color.FromArgb(196,181,253), Color.FromArgb(249,168,212), Color.FromArgb(125,211,252), Color.FromArgb(190,242,100),
+    };
     public static readonly HdiffThemePalette Light = new(
         AppBack: Color.FromArgb(220, 224, 230),
         SurfaceBack: Color.White,
@@ -112,4 +124,12 @@ internal static class HdiffThemes
         MemoSurfaceBack: Color.FromArgb(38, 33, 26));
 
     public static HdiffThemePalette Get(HdiffThemeKind theme) => theme == HdiffThemeKind.RustDark ? RustDark : Light;
+
+    public static Color MemoAuthorColor(HdiffThemePalette theme, string author)
+    {
+        var sum = 0;
+        foreach (var rune in author.EnumerateRunes()) sum = (sum + rune.Value) % 4096;
+        var colors = theme == RustDark ? DarkMemoAuthors : LightMemoAuthors;
+        return colors[sum % colors.Length];
+    }
 }

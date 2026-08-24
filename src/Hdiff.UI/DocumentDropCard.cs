@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.ComponentModel;
 using Hdiff.Core.Documents;
 
 namespace Hdiff.UI;
@@ -100,6 +101,7 @@ internal sealed class DocumentDropCard : UserControl
     }
 
     public event EventHandler? SourceChanged;
+    public event EventHandler<CancelEventArgs>? SourceChanging;
 
     public DocumentSource? Source => _source;
     public bool HasSource => _source is not null;
@@ -132,6 +134,9 @@ internal sealed class DocumentDropCard : UserControl
         if (source is { Kind: DocumentSourceKind.DirectText, Text: null })
             throw new ArgumentException("직접 입력 텍스트가 없습니다.", nameof(source));
         if (Equals(_source, source)) return;
+        var changing = new CancelEventArgs();
+        SourceChanging?.Invoke(this, changing);
+        if (changing.Cancel) return;
 
         _source = source;
         UpdateVisualState();
