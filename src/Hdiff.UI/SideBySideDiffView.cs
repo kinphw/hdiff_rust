@@ -89,6 +89,7 @@ internal sealed class SideBySideDiffView : UserControl
             // center divider remains visible on the initial empty screen.
             LayoutBody();
             QueueReflow();
+            MemoGeometryChanged?.Invoke(this, EventArgs.Empty);
         };
 
         Controls.Add(_body);
@@ -104,6 +105,9 @@ internal sealed class SideBySideDiffView : UserControl
     /// <summary>A reviewer clicked the memo flag of this comparison cell.</summary>
     public event EventHandler<DiffMemoTarget>? MemoOpenRequested;
 
+    /// <summary>The selected memo anchor moved because the view scrolled or reflowed.</summary>
+    public event EventHandler? MemoGeometryChanged;
+
     /// <summary>Memos per comparison row, counted separately for each column.</summary>
     public void SetMemoCounts(IReadOnlyDictionary<int, (int Old, int New)> countByDiffRow) =>
         _canvas.SetMemoCounts(countByDiffRow);
@@ -117,7 +121,27 @@ internal sealed class SideBySideDiffView : UserControl
         get => _canvas.PinnedDiffRow;
         set => _canvas.PinnedDiffRow = value;
     }
-    public DiffMemoTarget? PinnedMemoTarget { get => _canvas.PinnedMemoTarget; set => _canvas.PinnedMemoTarget = value; }
+    public DiffMemoTarget? PinnedMemoTarget
+    {
+        get => _canvas.PinnedMemoTarget;
+        set
+        {
+            _canvas.PinnedMemoTarget = value;
+            MemoGeometryChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public bool TryGetPinnedMemoAnchorScreen(out Point anchor)
+    {
+        if (_canvas.TryGetPinnedMemoFlagBounds(out var bounds))
+        {
+            anchor = _canvas.PointToScreen(new Point(bounds.Right, bounds.Top + (bounds.Height / 2)));
+            return true;
+        }
+
+        anchor = default;
+        return false;
+    }
 
     /// <summary>Brings a comparison row into view and marks it briefly, for memo navigation.</summary>
     public void RevealDiffRow(int diffRow)
@@ -361,6 +385,7 @@ internal sealed class SideBySideDiffView : UserControl
         _canvas.HorizontalOffset = _horizontalScroll.Visible ? _horizontalScroll.Value : 0;
         UpdateOverviewViewports();
         _canvas.Invalidate();
+        MemoGeometryChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void CanvasMouseWheel(object? sender, MouseEventArgs e)
@@ -565,6 +590,25 @@ internal sealed class SideBySideDiffView : UserControl
         {
             get => _pinnedMemoTarget;
             set { if(_pinnedMemoTarget==value)return;_pinnedMemoTarget=value;_pinnedDiffRow=value?.RowIndex;Invalidate(); }
+        }
+
+        public bool TryGetPinnedMemoFlagBounds(out Rectangle bounds)
+        {
+            bounds = Rectangle.Empty;
+            if (_pinnedMemoTarget is not { } target) return false;
+
+            for (var index = 0; index < _rows.Count; index++)
+            {
+                var row = _rows[index];
+                if (row.DiffRowIndex != target.RowIndex || !IsFirstVisualLineOfDiffRow(index)) continue;
+
+                var y = (index * RowHeight) - ScrollOffset;
+                if (y + RowHeight <= 0 || y >= ClientSize.Height) return false;
+                bounds = GetMemoFlagBounds(row, y, target.Side == DiffMemoSide.Old);
+                return !bounds.IsEmpty;
+            }
+
+            return false;
         }
 
         public void SetMemoCounts(IReadOnlyDictionary<int, (int Old, int New)> countByDiffRow)
@@ -856,17 +900,6 @@ internal sealed class SideBySideDiffView : UserControl
             if (!IsFirstVisualLineOfDiffRow(visualRowIndex)) return;
             DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: true), counts.Old);
             DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: false), counts.New);
-            DrawMemoLink(graphics,row,y);
-        }
-
-        private void DrawMemoLink(Graphics g, VisualDiffRow row, int y)
-        {
-            if(_pinnedMemoTarget is not { } t||t.RowIndex!=row.DiffRowIndex)return;
-            var old=t.Side==DiffMemoSide.Old;var flag=GetMemoFlagBounds(row,y,old);var cell=old?_oldContentBounds:_newContentBounds;
-            var start=flag.IsEmpty?new Point(cell.Right-8,y+RowHeight/2):new Point(flag.Right,flag.Top+flag.Height/2);
-            var end=new Point(ClientSize.Width-2,start.Y);var bend=Math.Max(24,(end.X-start.X)/3);
-            using var path=new GraphicsPath();path.AddBezier(start,new Point(start.X+bend,start.Y),new Point(end.X-bend,end.Y),end);
-            using var pen=new Pen(_theme.MemoAccent,1.5f){DashPattern=new[]{5f,3f}};var s=g.SmoothingMode;g.SmoothingMode=SmoothingMode.AntiAlias;g.DrawPath(pen,path);g.SmoothingMode=s;
         }
 
         private void DrawMemoAdd(Graphics g,int y,int visual,VisualDiffRow row)

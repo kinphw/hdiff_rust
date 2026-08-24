@@ -354,6 +354,7 @@ Expect(!exportedHtmlWithMemos.Contains("<link ", StringComparison.OrdinalIgnoreC
 var memoPanelSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","DiffMemoListPanel.cs"));
 var mainFormSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","MainForm.cs"));
 var diffViewSource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","SideBySideDiffView.cs"));
+var memoLinkOverlaySource=File.ReadAllText(Path.Combine(FindRepositoryRoot(),"src","Hdiff.UI","MemoLinkOverlay.cs"));
 Expect(memoPanelSource.Contains("Dock = DockStyle.Right",StringComparison.Ordinal)
     && memoPanelSource.Contains("PanelWidth = 320",StringComparison.Ordinal)
     && memoPanelSource.Contains("CreateCard",StringComparison.Ordinal)
@@ -363,8 +364,13 @@ Expect(mainFormSource.Contains("_memoPanel.BeginAdd",StringComparison.Ordinal)
     && !mainFormSource.Contains("new DiffMemoEditorDialog",StringComparison.Ordinal)
     && mainFormSource.Contains("OnFormClosing",StringComparison.Ordinal),
     "메모 작성은 인라인이어야 하며 미저장 종료 경고가 있어야 합니다.");
-Expect(diffViewSource.Contains("DrawMemoAdd",StringComparison.Ordinal)&&diffViewSource.Contains("DrawMemoLink",StringComparison.Ordinal),
-    "행 호버 추가 버튼과 선택 메모 연결선이 있어야 합니다.");
+Expect(diffViewSource.Contains("DrawMemoAdd",StringComparison.Ordinal)
+    && diffViewSource.Contains("TryGetPinnedMemoAnchorScreen",StringComparison.Ordinal)
+    && memoPanelSource.Contains("TryGetSelectedCardAnchorScreen",StringComparison.Ordinal)
+    && mainFormSource.Contains("UpdateMemoLinkOverlay",StringComparison.Ordinal)
+    && memoLinkOverlaySource.Contains("path.AddBezier",StringComparison.Ordinal)
+    && memoLinkOverlaySource.Contains("HtTransparent",StringComparison.Ordinal),
+    "행 호버 추가 버튼과 본문부터 실제 메모 카드까지 이어지는 비간섭 연결선이 있어야 합니다.");
 var exportedMemoHtmlPath = Path.Combine(fixtureDir, "standalone-diff-preview-memos.html");
 File.WriteAllText(exportedMemoHtmlPath, exportedHtmlWithMemos, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 

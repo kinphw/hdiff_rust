@@ -45,6 +45,7 @@ internal sealed class MainForm : Form
     };
     private readonly SideBySideDiffView _diffView = new() { Dock = DockStyle.Fill, WrapLongLines = true };
     private readonly DiffMemoListPanel _memoPanel = new();
+    private readonly MemoLinkOverlay _memoLinkOverlay = new();
     private readonly DiffMemoStore _memoStore = new();
     private readonly ToolTip _toolTip = new();
     private readonly Icon? _applicationIcon = LoadApplicationIcon();
@@ -168,6 +169,9 @@ internal sealed class MainForm : Form
         Controls.Add(_summaryPanel);
         Controls.Add(_actions);
         Controls.Add(_sources);
+        Controls.Add(_memoLinkOverlay);
+        _memoLinkOverlay.BringToFront();
+        Layout += (_, _) => UpdateMemoLinkOverlay();
         ApplyTheme((DiffThemeOption)_themePicker.SelectedItem!, persist: false);
     }
 
@@ -247,6 +251,8 @@ internal sealed class MainForm : Form
         _memoPanel.ReplySubmitted += (_, item) => AddReply(item);
         _memoPanel.ReplyDeleteRequested += (_, key) => DeleteReply(key);
         _memoPanel.CloseRequested += (_, _) => ShowMemoPanel(false);
+        _diffView.MemoGeometryChanged += (_, _) => UpdateMemoLinkOverlay();
+        _memoPanel.SelectionGeometryChanged += (_, _) => UpdateMemoLinkOverlay();
         _memoPanel.Author = _memoAuthor;
         RefreshMemoSurfaces();
     }
@@ -291,6 +297,7 @@ internal sealed class MainForm : Form
         _memoPanel.SetDirty(_memosDirty);
         _memoButton.Text = _memoStore.Count == 0 ? "검토 메모" : $"검토 메모 {_memoStore.Count}";
         _memoButton.Enabled = _currentDiff is not null;
+        UpdateMemoLinkOverlay();
     }
 
     private IReadOnlyList<DiffMemoRow> BuildMemoRows()
@@ -317,6 +324,23 @@ internal sealed class MainForm : Form
     {
         _memoPanel.Visible = show;
         PerformLayout();
+        UpdateMemoLinkOverlay();
+    }
+
+    private void UpdateMemoLinkOverlay()
+    {
+        if (!IsHandleCreated || !_memoPanel.Visible
+            || !_diffView.TryGetPinnedMemoAnchorScreen(out var start)
+            || !_memoPanel.TryGetSelectedCardAnchorScreen(out var end))
+        {
+            _memoLinkOverlay.ClearLink();
+            return;
+        }
+
+        var diffBounds = RectangleToClient(_diffView.RectangleToScreen(_diffView.ClientRectangle));
+        var memoBounds = RectangleToClient(_memoPanel.RectangleToScreen(_memoPanel.ClientRectangle));
+        _memoLinkOverlay.Bounds = Rectangle.Union(diffBounds, memoBounds);
+        _memoLinkOverlay.ShowLink(start, end);
     }
 
     private void AddMemo(SideBySideDiffView.DiffMemoTarget target)
@@ -509,6 +533,7 @@ internal sealed class MainForm : Form
         _newFile.ApplyTheme(theme);
         _diffView.ApplyTheme(theme);
         _memoPanel.ApplyTheme(theme);
+        _memoLinkOverlay.ApplyTheme(theme);
         if (persist) HdiffUserSettings.SaveThemeKey(option.Key);
     }
 

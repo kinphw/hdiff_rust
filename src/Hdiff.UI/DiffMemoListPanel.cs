@@ -43,7 +43,9 @@ internal sealed class DiffMemoListPanel : Panel
         titleRow.Controls.Add(_dirty,2,0); titleRow.Controls.Add(_close,3,0);
         _header.Controls.Add(_hint); _header.Controls.Add(_author); _header.Controls.Add(titleRow);
         _close.Click += (_,_) => CloseRequested?.Invoke(this,EventArgs.Empty);
-        _list.Resize += (_,_) => ResizeChildren();
+        _list.Resize += (_,_) => { ResizeChildren(); SelectionGeometryChanged?.Invoke(this,EventArgs.Empty); };
+        _list.Scroll += (_,_) => SelectionGeometryChanged?.Invoke(this,EventArgs.Empty);
+        _list.Layout += (_,_) => SelectionGeometryChanged?.Invoke(this,EventArgs.Empty);
         Controls.Add(_list); Controls.Add(_header);
         ApplyTheme(_theme);
     }
@@ -54,6 +56,7 @@ internal sealed class DiffMemoListPanel : Panel
     public event EventHandler<DiffMemoReplySubmission>? ReplySubmitted;
     public event EventHandler<DiffMemoReplyKey>? ReplyDeleteRequested;
     public event EventHandler? CloseRequested;
+    public event EventHandler? SelectionGeometryChanged;
     public string Author { get => string.IsNullOrWhiteSpace(_author.Text) ? "검토자" : _author.Text.Trim(); set => _author.Text = value; }
 
     public void SetMemos(IReadOnlyList<DiffMemoRow> memos)
@@ -86,6 +89,25 @@ internal sealed class DiffMemoListPanel : Panel
         foreach (Control control in _list.Controls)
             if (control.Tag is string memoId) { control.Invalidate(); if (memoId == id) selected = control; }
         if (selected is not null) _list.ScrollControlIntoView(selected);
+        SelectionGeometryChanged?.Invoke(this,EventArgs.Empty);
+    }
+
+    public bool TryGetSelectedCardAnchorScreen(out Point anchor)
+    {
+        anchor = default;
+        if (!Visible || _selectedId is null) return false;
+        var card = _list.Controls.Cast<Control>()
+            .FirstOrDefault(control => control.Tag is string id && id == _selectedId);
+        if (card is null) return false;
+
+        var cardBounds = card.RectangleToScreen(card.ClientRectangle);
+        var listBounds = _list.RectangleToScreen(_list.ClientRectangle);
+        var visibleBounds = Rectangle.Intersect(cardBounds, listBounds);
+        if (visibleBounds.IsEmpty) return false;
+
+        anchor = new Point(cardBounds.Left,
+            Math.Clamp(cardBounds.Top + Math.Min(18, cardBounds.Height / 2), visibleBounds.Top + 1, visibleBounds.Bottom - 1));
+        return true;
     }
 
     public void ApplyTheme(HdiffThemePalette theme)
