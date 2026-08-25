@@ -12,7 +12,8 @@ internal sealed record DiffMemoDraftTarget(
     DiffMemoSide Side,
     string Position,
     string? Quote,
-    string? SelectedText = null);
+    string? SelectedText = null,
+    int SelectionStart = -1);
 internal sealed record DiffMemoSubmission(string? MemoId, DiffMemoDraftTarget Target, string Author, string Text);
 internal sealed record DiffMemoReplySubmission(string MemoId, string Author, string Text);
 internal sealed record DiffMemoReplyKey(string MemoId, string ReplyId);

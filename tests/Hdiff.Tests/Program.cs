@@ -266,6 +266,37 @@ Expect(oldSideMemo.Anchor.Paragraph == exportDiff.Rows[modifiedRowIndex].OldText
 Expect(oldSideMemo.Anchor.Quote is null && !oldSideMemo.Anchor.HasSelectedText,
     "문구를 선택하지 않고 단 메모는 인용을 남기지 않아야 합니다.");
 
+// 구간을 가로지르는 인라인 강조가 있어도 본문 글자는 그대로여야 합니다.
+var straddleBefore = new ParsedDocument("straddle-before", new[]
+{
+    new DocumentBlock(DocumentBlockKind.Paragraph, "평가기간은 5년으로 하며 기간을 연장할 수 있다."),
+}, "test", Array.Empty<string>());
+var straddleAfter = new ParsedDocument("straddle-after", new[]
+{
+    new DocumentBlock(DocumentBlockKind.Paragraph, "평가기간은 7년으로 하며 기간을 연장할 수 있다."),
+}, "test", Array.Empty<string>());
+var straddleDiff = new DocumentDiffer().Compare(straddleBefore, straddleAfter);
+var straddleStore = new DiffMemoStore();
+// "5년으로 하며"는 변경된 숫자(강조 조각)와 그 뒤 조각에 걸쳐 있습니다.
+straddleStore.Add(straddleDiff, 0, DiffMemoSide.Old, "김검토", "기간 산정 근거 확인", memoTime, "5년으로 하며", 6);
+var straddleHtml = HtmlDiffExporter.Create(straddleDiff, new HtmlDiffExportOptions(
+    FontSizePixels: 14, WrapLongLines: true, ShowRowSeparators: false, Theme: HtmlDiffTheme.Light,
+    AppVersion: "0.1.0-test", GeneratedAt: memoTime), straddleStore.Memos);
+var straddleRowText = System.Text.RegularExpressions.Regex.Replace(
+    straddleHtml[straddleHtml.IndexOf("old-side", StringComparison.Ordinal)..],
+    "<[^>]+>", string.Empty);
+Expect(straddleRowText.Contains("평가기간은 5년으로 하며 기간을 연장할 수 있다.", StringComparison.Ordinal),
+    "구간 표시가 인라인 강조를 가로질러도 본문 글자를 잃거나 겹치면 안 됩니다.");
+Expect(System.Text.RegularExpressions.Regex.Matches(straddleHtml, "<mark class=\"memo-range\"").Count >= 2,
+    "여러 조각에 걸친 구간은 조각마다 표시를 이어 붙여야 합니다.");
+
+// 같은 낱말이 두 번 나오는 문단에서는 오프셋이 어느 쪽인지 가려야 합니다.
+var repeated = straddleStore.Add(straddleDiff, 0, DiffMemoSide.Old, "김검토", "뒤쪽 기간", memoTime.AddMinutes(1), "기간", 14);
+Expect(repeated.Anchor.SelectionStart == 14,
+    "같은 낱말이 반복되면 표시한 위치에 가장 가까운 쪽을 골라야 합니다.");
+Expect(straddleStore.Memos.First(memo => memo.Text == "기간 산정 근거 확인").Anchor.SelectionStart == 6,
+    "구간은 문단 안의 정확한 위치를 기억해야 합니다.");
+
 // 문구를 선택하고 단 메모: 카드가 문단 전체 대신 그 문구만 인용합니다.
 var phraseRowIndex = exportDiff.Rows
     .Select((row, index) => (row, index))
@@ -273,12 +304,16 @@ var phraseRowIndex = exportDiff.Rows
 var phraseSource = exportDiff.Rows[phraseRowIndex].NewText!;
 var phrase = phraseSource.Substring(3, 8);
 var phraseMemo = memoStore.Add(exportDiff, phraseRowIndex, DiffMemoSide.New, "김검토",
-    "이 문구가 규정 용어와 맞지 않습니다.", memoTime.AddMinutes(9), phrase);
+    "이 문구가 규정 용어와 맞지 않습니다.", memoTime.AddMinutes(9), phrase, 3);
+var phraseMemoNumber = DiffMemoDisplay.NumberForDisplay(memoStore.Memos, exportDiff.Rows.Count)
+    .First(item => item.Memo.Id == phraseMemo.Id).Number;
 // 드래그는 대개 앞뒤 공백을 물고 끝나므로 인용은 다듬어 저장합니다.
 Expect(phraseMemo.Anchor.Quote == phrase.Trim() && phraseMemo.Anchor.HasSelectedText,
     "선택한 문구를 앞뒤 공백만 다듬어 그대로 인용해야 합니다.");
 Expect(phraseMemo.Anchor.Paragraph == phraseSource,
     "문구를 인용해도 메모는 여전히 그 문단에 붙어 있어야 합니다.");
+Expect(phraseMemo.Anchor.HasRange && phraseMemo.Anchor.SelectionStart == phraseSource.IndexOf(phrase.Trim(), StringComparison.Ordinal),
+    "인용은 문단 안의 위치까지 함께 기억해야 합니다.");
 Expect(memoStore.Add(exportDiff, phraseRowIndex, DiffMemoSide.New, "김검토", "문단 전체", memoTime.AddMinutes(10), phraseSource)
         .Anchor.Quote is null,
     "문단 전체를 선택한 것은 인용으로 남길 가치가 없습니다.");
@@ -339,6 +374,10 @@ Expect(System.Text.RegularExpressions.Regex.Matches(exportedHtmlWithMemos, "<blo
 Expect(exportedHtmlWithMemos.Contains("function selectedPhrase(", StringComparison.Ordinal)
     && exportedHtmlWithMemos.Contains("if (quote) card.append(", StringComparison.Ordinal),
     "받는 사람도 문구를 선택한 채 메모를 달면 그 문구만 인용해야 합니다.");
+Expect(exportedHtmlWithMemos.Contains($"<mark class=\"memo-range\" data-memo=\"memo-{phraseMemoNumber}\">", StringComparison.Ordinal),
+    "선택한 구간은 본문에서 표시되어야 합니다.");
+Expect(!exportedHtmlWithMemos.Contains(".line-text > span", StringComparison.Ordinal),
+    "구간 표시로 감싼 조각도 본문 길이 계산에 포함되어야 합니다.");
 Expect(exportedHtmlWithMemos.Contains("calc((100vw - var(--memo-w))/2 + 2px)", StringComparison.Ordinal)
     && !exportedHtmlWithMemos.Contains("left:calc(50vw + 2px)", StringComparison.Ordinal),
     "메모 패널이 차지한 폭만큼 좌우 열 기준을 줄여야 고정 줄번호가 어긋나지 않습니다.");

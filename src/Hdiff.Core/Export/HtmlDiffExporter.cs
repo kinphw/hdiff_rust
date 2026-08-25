@@ -173,12 +173,14 @@ public static class HtmlDiffExporter
             .Append("</span><span class=\"line-number\">").Append(line?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)
             .Append("</span></div><div class=\"line-text\">");
 
+        var ranges = MemoRanges(notes);
         if (fragments.Count == 0 && text is not null)
         {
-            builder.Append("<span>").Append(Encode(DisplayText(text))).Append("</span>");
+            AppendMarkedText(builder, DisplayText(text), 0, ranges, null);
         }
         else
         {
+            var offset = 0;
             foreach (var fragment in fragments)
             {
                 var cssClass = fragment.Kind switch
@@ -187,8 +189,9 @@ public static class HtmlDiffExporter
                     InlineDiffFragmentKind.Added => "added",
                     _ => "unchanged",
                 };
-                builder.Append("<span class=\"fragment ").Append(cssClass).Append("\">")
-                    .Append(Encode(DisplayText(fragment.Text))).Append("</span>");
+                var fragmentText = DisplayText(fragment.Text);
+                AppendMarkedText(builder, fragmentText, offset, ranges, cssClass);
+                offset += fragmentText.Length;
             }
         }
 
@@ -204,6 +207,74 @@ public static class HtmlDiffExporter
         }
 
         builder.AppendLine("</div></div>");
+    }
+
+    /// <summary>
+    /// Writes one fragment, splitting it wherever a memo marks the text so the
+    /// marked words carry the memo mark. A range can straddle several
+    /// fragments, so the paragraph offset is carried across them.
+    /// </summary>
+    private static void AppendMarkedText(
+        StringBuilder builder,
+        string fragmentText,
+        int fragmentStart,
+        IReadOnlyList<(int Start, int End, int Number)> ranges,
+        string? fragmentClass)
+    {
+        var position = 0;
+        while (position < fragmentText.Length)
+        {
+            var absolute = fragmentStart + position;
+            var mark = FindRange(ranges, absolute);
+            var length = mark is { } marked
+                ? Math.Min(fragmentText.Length - position, marked.End - absolute)
+                : NextRangeStart(ranges, absolute, fragmentStart + fragmentText.Length) - absolute;
+            if (length <= 0) length = fragmentText.Length - position;
+
+            var piece = fragmentText.Substring(position, length);
+            if (mark is { } inside) builder.Append("<mark class=\"memo-range\" data-memo=\"memo-").Append(inside.Number).Append("\">");
+            builder.Append(fragmentClass is null ? "<span>" : $"<span class=\"fragment {fragmentClass}\">")
+                .Append(Encode(piece)).Append("</span>");
+            if (mark is not null) builder.Append("</mark>");
+            position += length;
+        }
+    }
+
+    private static (int Start, int End, int Number)? FindRange(
+        IReadOnlyList<(int Start, int End, int Number)> ranges,
+        int offset)
+    {
+        foreach (var range in ranges)
+        {
+            if (offset >= range.Start && offset < range.End) return range;
+        }
+        return null;
+    }
+
+    private static int NextRangeStart(
+        IReadOnlyList<(int Start, int End, int Number)> ranges,
+        int offset,
+        int limit)
+    {
+        var next = limit;
+        foreach (var range in ranges)
+        {
+            if (range.Start > offset && range.Start < next) next = range.Start;
+        }
+        return next;
+    }
+
+    private static IReadOnlyList<(int Start, int End, int Number)> MemoRanges(IReadOnlyList<NumberedDiffMemo>? notes)
+    {
+        if (notes is null) return Array.Empty<(int, int, int)>();
+        return notes
+            .Where(note => note.Memo.Anchor.HasRange)
+            .Select(note => (
+                note.Memo.Anchor.SelectionStart,
+                note.Memo.Anchor.SelectionEnd,
+                note.Number))
+            .OrderBy(range => range.SelectionStart)
+            .ToArray();
     }
 
     private static string FlagTooltip(NumberedDiffMemo note) =>
@@ -424,6 +495,7 @@ button{font:inherit}
 .overview{z-index:5;grid-row:2;position:relative;justify-self:end;width:42px;min-height:0;overflow:hidden;background:var(--header);border-left:1px solid var(--border);cursor:pointer;touch-action:none;user-select:none}.old-overview{grid-column:1}.new-overview{grid-column:3}.overview-canvas,.overview-signal-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}.overview-canvas{z-index:1}.overview-signal-canvas{z-index:3;pointer-events:none}.overview-viewport{position:absolute;z-index:2;left:0;right:0;min-height:16px;border:1px solid var(--overview);background:var(--viewport);pointer-events:none}
 .memo-toggle{cursor:pointer;color:var(--memo-accent);background:var(--memo-card);border-color:var(--memo-accent)}
 .memo-toggle[aria-pressed="false"]{background:var(--header);color:var(--muted);border-color:var(--border)}
+mark.memo-range{background:color-mix(in srgb,var(--memo-accent) 22%,transparent);color:inherit;border-bottom:2px solid var(--memo-accent);padding:0}
 .memo-flag{display:inline-block;vertical-align:baseline;margin:0 0 0 5px;padding:0 5px;min-width:17px;border:1px solid var(--memo-accent);border-radius:9px;background:var(--memo-accent);color:var(--memo-flag-text);font-size:10px;font-weight:700;line-height:15px;white-space:normal;cursor:pointer}
 .memo-flag:hover,.memo-flag:focus-visible{outline:2px solid var(--memo-accent);outline-offset:1px}
 .diff-pair.has-memo .diff-row:not(.imaginary){box-shadow:inset 3px 0 0 var(--memo-accent)}
@@ -514,7 +586,7 @@ button{font:inherit}
       else if (element.classList.contains('kind-inserted')) kind = 'inserted';
       // Only the document fragments count: a memo flag must not make the
       // minimap draw the paragraph longer than it is.
-      const fragments = [...element.querySelectorAll('.line-text > span')];
+      const fragments = [...element.querySelectorAll('.line-text span')];
       return {
         kind,
         imaginary: element.classList.contains('imaginary'),
@@ -982,7 +1054,7 @@ button{font:inherit}
   }
 
   function rowText(side) {
-    return [...side.querySelectorAll('.line-text > span')].map(span => span.textContent).join('');
+    return [...side.querySelectorAll('.line-text span')].map(span => span.textContent).join('');
   }
 
   function rowKind(pair) {

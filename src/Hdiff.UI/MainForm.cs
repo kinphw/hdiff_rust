@@ -302,6 +302,7 @@ internal sealed class MainForm : Form
     private void RefreshMemoSurfaces()
     {
         _diffView.SetMemoNumbers(BuildMemoNumbers());
+        _diffView.SetMemoRanges(BuildMemoRanges());
         _memoPanel.SetMemos(BuildMemoRows());
         _memoPanel.SetDirty(_memosDirty);
         _memoButton.Text = _memoStore.Count == 0 ? "검토 메모" : $"검토 메모 {_memoStore.Count}";
@@ -325,6 +326,25 @@ internal sealed class MainForm : Form
                         .Where(item => item.Memo.Anchor.Side == DiffMemoSide.New)
                         .Select(item => item.Number)
                         .ToArray()));
+    }
+
+    /// <summary>
+    /// The stretches of text the comparison should mark, so a reader sees which
+    /// words a memo is about before opening it.
+    /// </summary>
+    private IReadOnlyDictionary<(int RowIndex, DiffMemoSide Side), IReadOnlyList<SideBySideDiffView.DiffMemoRange>> BuildMemoRanges()
+    {
+        return NumberedMemos()
+            .Where(item => !item.Memo.Anchor.IsOrphaned && item.Memo.Anchor.HasRange)
+            .GroupBy(item => (item.Memo.Anchor.RowIndex, item.Memo.Anchor.Side))
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<SideBySideDiffView.DiffMemoRange>)group
+                    .Select(item => new SideBySideDiffView.DiffMemoRange(
+                        item.Memo.Anchor.SelectionStart,
+                        item.Memo.Anchor.SelectedText!.Length,
+                        item.Number))
+                    .ToArray());
     }
 
     private IReadOnlyList<DiffMemoRow> BuildMemoRows()
@@ -391,7 +411,8 @@ internal sealed class MainForm : Form
             side,
             DescribeRowPosition(row),
             phrase,
-            phrase));
+            phrase,
+            target.SelectionStart));
         _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(target.RowIndex, side);
     }
 
@@ -415,7 +436,8 @@ internal sealed class MainForm : Form
                 item.Author,
                 item.Text,
                 DateTimeOffset.Now,
-                item.Target.SelectedText).Id;
+                item.Target.SelectedText,
+                item.Target.SelectionStart).Id;
         }
         MarkMemosDirty();
         _memoPanel.SelectMemo(id);

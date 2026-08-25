@@ -110,6 +110,13 @@ internal sealed class SideBySideDiffView : UserControl
         _canvas.SetMemoNumbers(numbersByDiffRow);
 
     /// <summary>
+    /// Marked stretches of text, keyed by comparison cell. Drawing these is what
+    /// lets a reader see which words a memo is about without opening it.
+    /// </summary>
+    public void SetMemoRanges(IReadOnlyDictionary<(int RowIndex, DiffMemoSide Side), IReadOnlyList<DiffMemoRange>> ranges) =>
+        _canvas.SetMemoRanges(ranges);
+
+    /// <summary>
     /// Marks the row a memo belongs to for as long as that memo stays selected,
     /// which is what ties a memo in the list to its paragraph on screen.
     /// </summary>
@@ -224,6 +231,8 @@ internal sealed class SideBySideDiffView : UserControl
         _canvas.PinnedDiffRow = null;
         _canvas.SetMemoNumbers(
             new Dictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)>());
+        _canvas.SetMemoRanges(
+            new Dictionary<(int RowIndex, DiffMemoSide Side), IReadOnlyList<DiffMemoRange>>());
         _oldHeader.Text = "변경 전";
         _newHeader.Text = "변경 후";
         _visualRows.Clear();
@@ -277,8 +286,10 @@ internal sealed class SideBySideDiffView : UserControl
 
             for (var lineIndex = 0; lineIndex < visualLineCount; lineIndex++)
             {
-                var oldFragments = lineIndex < oldLines.Count ? oldLines[lineIndex] : EmptyFragments;
-                var newFragments = lineIndex < newLines.Count ? newLines[lineIndex] : EmptyFragments;
+                var oldLine = lineIndex < oldLines.Count ? oldLines[lineIndex] : null;
+                var newLine = lineIndex < newLines.Count ? newLines[lineIndex] : null;
+                var oldFragments = oldLine?.Fragments ?? EmptyFragments;
+                var newFragments = newLine?.Fragments ?? EmptyFragments;
                 _visualRows.Add(new VisualDiffRow(
                     rowIndex,
                     lineIndex == 0 ? row.OldLine : null,
@@ -288,7 +299,9 @@ internal sealed class SideBySideDiffView : UserControl
                     row.Kind,
                     row.Presentation,
                     row.OldText is null,
-                    row.NewText is null));
+                    row.NewText is null,
+                    oldLine?.Start ?? -1,
+                    newLine?.Start ?? -1));
                 _oldTextWidth = Math.Max(_oldTextWidth, MeasureFragments(oldFragments));
                 _newTextWidth = Math.Max(_newTextWidth, MeasureFragments(newFragments));
             }
@@ -316,14 +329,21 @@ internal sealed class SideBySideDiffView : UserControl
         _newOverview.BringToFront();
     }
 
-    private IReadOnlyList<IReadOnlyList<InlineDiffFragment>> SplitFragments(IReadOnlyList<InlineDiffFragment> fragments, int availableWidth)
+    /// <summary>
+    /// Wraps one paragraph into display lines, recording where each line starts
+    /// inside the paragraph. A memo range is stored against the paragraph, so
+    /// without these offsets a mark could not be drawn on a wrapped line.
+    /// </summary>
+    private IReadOnlyList<WrappedLine> SplitFragments(IReadOnlyList<InlineDiffFragment> fragments, int availableWidth)
     {
-        if (fragments.Count == 0) return Array.Empty<IReadOnlyList<InlineDiffFragment>>();
-        if (!_wrapLongLines) return new[] { fragments };
+        if (fragments.Count == 0) return Array.Empty<WrappedLine>();
+        if (!_wrapLongLines) return new[] { new WrappedLine(fragments, 0) };
 
-        var lines = new List<IReadOnlyList<InlineDiffFragment>>();
+        var lines = new List<WrappedLine>();
         var current = new List<InlineDiffFragment>();
         var width = 0;
+        var offset = 0;
+        var lineStart = 0;
         foreach (var fragment in fragments)
         {
             foreach (var character in ToDisplayText(fragment.Text))
@@ -331,15 +351,17 @@ internal sealed class SideBySideDiffView : UserControl
                 var characterWidth = MeasureCharacter(character);
                 if (width > 0 && width + characterWidth > availableWidth)
                 {
-                    lines.Add(current);
+                    lines.Add(new WrappedLine(current, lineStart));
                     current = new List<InlineDiffFragment>();
                     width = 0;
+                    lineStart = offset;
                 }
                 AppendFragmentCharacter(current, fragment.Kind, character);
                 width += characterWidth;
+                offset++;
             }
         }
-        if (current.Count > 0) lines.Add(current);
+        if (current.Count > 0) lines.Add(new WrappedLine(current, lineStart));
         return lines;
     }
 
@@ -461,12 +483,19 @@ internal sealed class SideBySideDiffView : UserControl
 
     private static readonly TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
+    /// <summary>A marked stretch of one paragraph, in paragraph character offsets.</summary>
+    internal readonly record struct DiffMemoRange(int Start, int Length, int Number);
+
     /// <summary>One comparison cell: the row plus the column it belongs to.</summary>
     internal readonly record struct DiffMemoTarget(
         int RowIndex,
         DiffMemoSide Side,
         int? MemoNumber = null,
-        string? SelectedText = null);
+        string? SelectedText = null,
+        int SelectionStart = -1);
+
+    /// <summary>One wrapped display line and where it starts in its paragraph.</summary>
+    private sealed record WrappedLine(IReadOnlyList<InlineDiffFragment> Fragments, int Start);
 
     private sealed record VisualDiffRow(
         int DiffRowIndex,
@@ -477,7 +506,9 @@ internal sealed class SideBySideDiffView : UserControl
         DiffChangeKind Kind,
         DiffRowPresentationKind Presentation,
         bool OldImaginary,
-        bool NewImaginary);
+        bool NewImaginary,
+        int OldStart,
+        int NewStart);
 
     private sealed class DiffCanvas : Control
     {
@@ -490,6 +521,8 @@ internal sealed class SideBySideDiffView : UserControl
         private IReadOnlyList<VisualDiffRow> _rows = Array.Empty<VisualDiffRow>();
         private IReadOnlyDictionary<int, (IReadOnlyList<int> Old, IReadOnlyList<int> New)> _memoNumbers =
             new Dictionary<int, (IReadOnlyList<int>, IReadOnlyList<int>)>();
+        private IReadOnlyDictionary<(int RowIndex, DiffMemoSide Side), IReadOnlyList<DiffMemoRange>> _memoRanges =
+            new Dictionary<(int, DiffMemoSide), IReadOnlyList<DiffMemoRange>>();
         private int? _highlightedDiffRow;
         private int? _pinnedDiffRow;
         private DiffMemoTarget? _pinnedMemoTarget;
@@ -517,6 +550,7 @@ internal sealed class SideBySideDiffView : UserControl
         private int _contextDiffRow = -1;
         private DiffMemoSide _contextSide = DiffMemoSide.New;
         private string? _contextSelectedText;
+        private int _contextSelectionStart = -1;
 
         public DiffCanvas()
         {
@@ -553,7 +587,7 @@ internal sealed class SideBySideDiffView : UserControl
                 _contextSide = ResolveSide(_contextDiffRow, GetSide(location) == true ? DiffMemoSide.Old : DiffMemoSide.New);
                 _copySelectionItem.Enabled = _textSelectionEnabled && HasSelection;
                 _selectAllItem.Enabled = _textSelectionEnabled && _rows.Count > 0;
-                _contextSelectedText = GetSelectedPhrase(_contextDiffRow, _contextSide);
+                (_contextSelectedText, _contextSelectionStart) = GetSelectedPhrase(_contextDiffRow, _contextSide);
                 var column = _contextSide == DiffMemoSide.Old ? "변경 전" : "변경 후";
                 _addMemoItem.Text = _contextSelectedText is null
                     ? $"{column}에 검토 메모 추가…"
@@ -634,6 +668,18 @@ internal sealed class SideBySideDiffView : UserControl
             Invalidate();
         }
 
+        public void SetMemoRanges(
+            IReadOnlyDictionary<(int RowIndex, DiffMemoSide Side), IReadOnlyList<DiffMemoRange>> ranges)
+        {
+            _memoRanges = ranges;
+            Invalidate();
+        }
+
+        private IReadOnlyList<DiffMemoRange> GetMemoRanges(int diffRowIndex, bool oldSide) =>
+            _memoRanges.TryGetValue((diffRowIndex, oldSide ? DiffMemoSide.Old : DiffMemoSide.New), out var ranges)
+                ? ranges
+                : Array.Empty<DiffMemoRange>();
+
         private (IReadOnlyList<int> Old, IReadOnlyList<int> New) GetMemoNumbers(int diffRowIndex) =>
             _memoNumbers.TryGetValue(diffRowIndex, out var numbers)
                 ? numbers
@@ -667,7 +713,8 @@ internal sealed class SideBySideDiffView : UserControl
             handler?.Invoke(this, new DiffMemoTarget(
                 _contextDiffRow,
                 _contextSide,
-                SelectedText: _contextSelectedText));
+                SelectedText: _contextSelectedText,
+                SelectionStart: _contextSelectionStart));
         }
 
         /// <summary>
@@ -675,17 +722,25 @@ internal sealed class SideBySideDiffView : UserControl
         /// selection sits inside the cell the memo is being written on. A
         /// selection that runs across rows says nothing about one paragraph.
         /// </summary>
-        private string? GetSelectedPhrase(int diffRowIndex, DiffMemoSide side)
+        private (string? Phrase, int Start) GetSelectedPhrase(int diffRowIndex, DiffMemoSide side)
         {
-            if (diffRowIndex < 0 || !HasSelection) return null;
+            if (diffRowIndex < 0 || !HasSelection) return (null, -1);
             var (start, end) = NormalizedSelection();
-            if (start.OldSide != (side == DiffMemoSide.Old)) return null;
-            if (start.VisualRow < 0 || end.VisualRow >= _rows.Count) return null;
-            if (_rows[start.VisualRow].DiffRowIndex != diffRowIndex) return null;
-            if (_rows[end.VisualRow].DiffRowIndex != diffRowIndex) return null;
+            var oldSide = side == DiffMemoSide.Old;
+            if (start.OldSide != oldSide) return (null, -1);
+            if (start.VisualRow < 0 || end.VisualRow >= _rows.Count) return (null, -1);
+            if (_rows[start.VisualRow].DiffRowIndex != diffRowIndex) return (null, -1);
+            if (_rows[end.VisualRow].DiffRowIndex != diffRowIndex) return (null, -1);
 
-            var phrase = GetSelectedText().Trim();
-            return phrase.Length == 0 ? null : phrase;
+            var phrase = GetSelectedText();
+            if (phrase.Trim().Length == 0) return (null, -1);
+
+            // Offsets are kept against the paragraph, so add the display line's
+            // own start; trimming the phrase shifts the start with it.
+            var lineStart = oldSide ? _rows[start.VisualRow].OldStart : _rows[start.VisualRow].NewStart;
+            if (lineStart < 0) return (phrase.Trim(), -1);
+            var leadingSpaces = phrase.Length - phrase.TrimStart().Length;
+            return (phrase.Trim(), lineStart + start.CharacterIndex + leadingSpaces);
         }
 
         public int ScrollOffset { get; set; }
@@ -809,10 +864,12 @@ internal sealed class SideBySideDiffView : UserControl
                 var selectedSide = ResolveSide(
                     selectedRow,
                     anchor.OldSide ? DiffMemoSide.Old : DiffMemoSide.New);
+                var (phrase, phraseStart) = GetSelectedPhrase(selectedRow, selectedSide);
                 return new DiffMemoTarget(
                     selectedRow,
                     selectedSide,
-                    SelectedText: GetSelectedPhrase(selectedRow, selectedSide));
+                    SelectedText: phrase,
+                    SelectionStart: phraseStart);
             }
 
             var location = PointToClient(Cursor.Position);
@@ -1205,11 +1262,47 @@ internal sealed class SideBySideDiffView : UserControl
                     x += width;
                 }
 
-                DrawSelection(graphics, textBounds, y, visualRowIndex, oldSide, string.Concat(fragments.Select(fragment => fragment.Text)));
+                var displayedText = string.Concat(fragments.Select(fragment => fragment.Text));
+                DrawMemoRanges(graphics, textBounds, y, visualRowIndex, oldSide, displayedText);
+                DrawSelection(graphics, textBounds, y, visualRowIndex, oldSide, displayedText);
             }
             finally
             {
                 graphics.Restore(saved);
+            }
+        }
+
+        /// <summary>
+        /// Underlines the marked words on this display line. A range is stored
+        /// against the whole paragraph, so each wrapped line draws only the part
+        /// of it that falls inside the line.
+        /// </summary>
+        private void DrawMemoRanges(Graphics graphics, Rectangle textBounds, int y, int visualRowIndex, bool oldSide, string text)
+        {
+            if (text.Length == 0 || visualRowIndex >= _rows.Count) return;
+            var row = _rows[visualRowIndex];
+            var ranges = GetMemoRanges(row.DiffRowIndex, oldSide);
+            if (ranges.Count == 0) return;
+
+            var lineStart = oldSide ? row.OldStart : row.NewStart;
+            if (lineStart < 0) return;
+            var lineEnd = lineStart + text.Length;
+
+            foreach (var range in ranges)
+            {
+                var start = Math.Max(range.Start, lineStart);
+                var end = Math.Min(range.Start + range.Length, lineEnd);
+                if (end <= start) continue;
+
+                var startX = textBounds.X - HorizontalOffset + MeasureTextWidth(text.AsSpan(0, start - lineStart));
+                var endX = textBounds.X - HorizontalOffset + MeasureTextWidth(text.AsSpan(0, end - lineStart));
+                var width = Math.Max(1, endX - startX);
+                using (var tint = new SolidBrush(Color.FromArgb(46, _theme.MemoAccent)))
+                {
+                    graphics.FillRectangle(tint, startX, y + 1, width, RowHeight - 2);
+                }
+                using var underline = new Pen(_theme.MemoAccent, 2);
+                graphics.DrawLine(underline, startX, y + RowHeight - 3, startX + width, y + RowHeight - 3);
             }
         }
 

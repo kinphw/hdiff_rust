@@ -21,7 +21,8 @@ public sealed record DiffMemoAnchor(
     string? OldText,
     string? NewText,
     DiffMemoSide Side,
-    string? SelectedText = null)
+    string? SelectedText = null,
+    int SelectionStart = -1)
 {
     public const int OrphanedRowIndex = -1;
 
@@ -29,6 +30,15 @@ public sealed record DiffMemoAnchor(
 
     /// <summary>The memo is about this phrase rather than the whole paragraph.</summary>
     public bool HasSelectedText => !string.IsNullOrEmpty(SelectedText);
+
+    /// <summary>
+    /// The memo marks an exact stretch of the paragraph. The same words can
+    /// occur twice in one paragraph, so the offset - not the text - is what
+    /// says which one the reviewer meant.
+    /// </summary>
+    public bool HasRange => HasSelectedText && SelectionStart >= 0;
+
+    public int SelectionEnd => HasRange ? SelectionStart + SelectedText!.Length : -1;
 
     /// <summary>The paragraph the memo is attached to.</summary>
     public string Paragraph => Side == DiffMemoSide.Old
@@ -101,7 +111,8 @@ public sealed class DiffMemoStore
         string author,
         string text,
         DateTimeOffset createdAt,
-        string? selectedText = null)
+        string? selectedText = null,
+        int selectionStart = -1)
     {
         ArgumentNullException.ThrowIfNull(diff);
         if (rowIndex < 0 || rowIndex >= diff.Rows.Count)
@@ -110,7 +121,7 @@ public sealed class DiffMemoStore
         var row = diff.Rows[rowIndex];
         var memo = new DiffMemo(
             Guid.NewGuid().ToString("n"),
-            CreateAnchor(rowIndex, row, side, selectedText),
+            CreateAnchor(rowIndex, row, side, selectedText, selectionStart),
             author,
             text,
             createdAt,
@@ -122,24 +133,51 @@ public sealed class DiffMemoStore
     }
 
     /// <summary>
-    /// Keeps a selected phrase only when it really is part of the paragraph it
-    /// is anchored to, so a stale quote can never outlive the text it came from.
+    /// Keeps a selected range only when it really is part of the paragraph it
+    /// is anchored to, so a stale mark can never outlive the text it came from.
     /// </summary>
-    private static DiffMemoAnchor CreateAnchor(int rowIndex, DiffRow row, DiffMemoSide side, string? selectedText)
+    private static DiffMemoAnchor CreateAnchor(
+        int rowIndex,
+        DiffRow row,
+        DiffMemoSide side,
+        string? selectedText,
+        int selectionStart)
     {
         var resolvedSide = DiffMemoAnchor.ResolveSide(row, side);
         var anchor = new DiffMemoAnchor(rowIndex, row.Kind, row.OldText, row.NewText, resolvedSide);
-        return anchor with { SelectedText = KeepSelection(anchor, selectedText) };
+        var (phrase, start) = ResolveSelection(anchor.Paragraph, selectedText, selectionStart);
+        return anchor with { SelectedText = phrase, SelectionStart = start };
     }
 
-    private static string? KeepSelection(DiffMemoAnchor anchor, string? selectedText)
+    /// <summary>
+    /// Places the phrase inside the paragraph. When the same words occur more
+    /// than once, the occurrence nearest the offset the reviewer marked wins,
+    /// which is what keeps a mark on the right words after a re-comparison.
+    /// </summary>
+    private static (string? Phrase, int Start) ResolveSelection(
+        string paragraph,
+        string? selectedText,
+        int requestedStart)
     {
-        if (string.IsNullOrWhiteSpace(selectedText)) return null;
+        if (string.IsNullOrWhiteSpace(selectedText)) return (null, -1);
         var phrase = selectedText.Trim();
-        if (phrase.Length == 0) return null;
-        // A phrase equal to the whole paragraph adds nothing over the default.
-        if (string.Equals(phrase, anchor.Paragraph, StringComparison.Ordinal)) return null;
-        return anchor.Paragraph.Contains(phrase, StringComparison.Ordinal) ? phrase : null;
+        if (phrase.Length == 0) return (null, -1);
+        // Marking the whole paragraph says no more than attaching to the row.
+        if (string.Equals(phrase, paragraph, StringComparison.Ordinal)) return (null, -1);
+
+        var best = -1;
+        for (var index = paragraph.IndexOf(phrase, StringComparison.Ordinal);
+             index >= 0;
+             index = paragraph.IndexOf(phrase, index + 1, StringComparison.Ordinal))
+        {
+            if (best < 0
+                || (requestedStart >= 0 && Math.Abs(index - requestedStart) < Math.Abs(best - requestedStart)))
+            {
+                best = index;
+            }
+        }
+
+        return best < 0 ? (null, -1) : (phrase, best);
     }
 
     public bool Update(string id, string author, string text, DateTimeOffset updatedAt)
@@ -257,7 +295,7 @@ public sealed class DiffMemoStore
             {
                 Anchor = resolved is null
                     ? anchor with { RowIndex = DiffMemoAnchor.OrphanedRowIndex }
-                    : CreateAnchor(rowIndex, resolved, anchor.Side, anchor.SelectedText),
+                    : CreateAnchor(rowIndex, resolved, anchor.Side, anchor.SelectedText, anchor.SelectionStart),
             };
         }
 
