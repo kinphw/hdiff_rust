@@ -30,6 +30,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _rowSeparators = new() { Text = "Row Separators", Checked = false, AutoSize = true };
     private readonly CheckBox _textSelection = new() { Text = "Text Selection", Checked = true, AutoSize = true };
     private readonly CheckBox _includeMemos = new() { Text = "Include Memos", Checked = false, AutoSize = true };
+    private readonly CheckBox _reflowPdf = new() { Text = "Reflow PDF Paragraphs", Checked = true, AutoSize = true };
     private readonly Label _summary = new() { AutoSize = true, Text = "전/후 문서를 놓거나 직접 입력하면 자동으로 비교합니다." };
     private readonly Label _modifiedChip = CreateSummaryChip();
     private readonly Label _insertedChip = CreateSummaryChip();
@@ -550,6 +551,7 @@ internal sealed class MainForm : Form
         _ignoreBlankLines.Checked = HdiffUserSettings.LoadIgnoreBlankLines();
         _textSelection.Checked = HdiffUserSettings.LoadTextSelectionEnabled();
         _includeMemos.Checked = HdiffUserSettings.LoadIncludeMemos();
+        _reflowPdf.Checked = HdiffUserSettings.LoadReflowPdfParagraphs();
         _diffView.WrapLongLines = _wrapLongLines.Checked;
         _diffView.TextSelectionEnabled = _textSelection.Checked;
 
@@ -578,6 +580,12 @@ internal sealed class MainForm : Form
         _includeMemos.CheckedChanged += (_, _) =>
         {
             HdiffUserSettings.SaveIncludeMemos(_includeMemos.Checked);
+            RestartDocumentPreviews();
+        };
+        _reflowPdf.CheckedChanged += (_, _) =>
+        {
+            HdiffUserSettings.SaveReflowPdfParagraphs(_reflowPdf.Checked);
+            // The option changes how a PDF is read, so the documents are read again.
             RestartDocumentPreviews();
         };
     }
@@ -680,6 +688,7 @@ internal sealed class MainForm : Form
             _ignoreWhitespace.Checked,
             _ignoreBlankLines.Checked,
             _includeMemos.Checked,
+            _reflowPdf.Checked,
             HdiffThemes.Get(currentTheme.Theme));
 
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -692,6 +701,7 @@ internal sealed class MainForm : Form
         _ignoreWhitespace.Checked = dialog.IgnoreWhitespaceChanges;
         _ignoreBlankLines.Checked = dialog.IgnoreBlankLines;
         _includeMemos.Checked = dialog.IncludeMemos;
+        _reflowPdf.Checked = dialog.ReflowPdfParagraphs;
     }
 
     private static void PaintSettingsGlyph(object? sender, PaintEventArgs e)
@@ -956,11 +966,12 @@ internal sealed class MainForm : Form
         var source = card.Source;
         if (source is null) return null;
         var includeMemos = _includeMemos.Checked;
+        var reflowPdf = _reflowPdf.Checked;
 
         card.SetParsingState();
         try
         {
-            var document = await ReadSourceAsync(card, source, includeMemos);
+            var document = await ReadSourceAsync(card, source, includeMemos, reflowPdf);
             if (_comparisonRevision != revision || !Equals(card.Source, source)) return null;
 
             if (oldSide)
@@ -998,7 +1009,7 @@ internal sealed class MainForm : Form
             if (previewResult is not null) return previewResult;
         }
 
-        var document = await ReadSourceAsync(card, source, _includeMemos.Checked);
+        var document = await ReadSourceAsync(card, source, _includeMemos.Checked, _reflowPdf.Checked);
         if (Equals(card.Source, source))
         {
             if (oldSide)
@@ -1019,13 +1030,15 @@ internal sealed class MainForm : Form
     private static Task<ParsedDocument> ReadSourceAsync(
         DocumentDropCard card,
         DocumentSource source,
-        bool includeMemos) =>
+        bool includeMemos,
+        bool reflowPdfParagraphs) =>
         source.Kind == DocumentSourceKind.DirectText
             ? Task.FromResult(new PlainTextReader().ReadText($"{card.Caption} 직접 입력.md", source.Text ?? string.Empty, "직접 입력"))
             : Task.Run(() => new HwpWorkerClient().Read(
                 source.FilePath!,
                 allowComFallback: true,
-                includeMemos));
+                includeMemos,
+                reflowPdfParagraphs));
 
     private static Icon? LoadApplicationIcon()
     {

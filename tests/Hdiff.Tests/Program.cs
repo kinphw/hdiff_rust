@@ -463,6 +463,78 @@ Expect(numbersBySide.TryGetValue((modifiedRowIndex, DiffMemoSide.Old), out var o
 var exportedMemoHtmlPath = Path.Combine(fixtureDir, "standalone-diff-preview-memos.html");
 File.WriteAllText(exportedMemoHtmlPath, exportedHtmlWithMemos, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
+// PDF는 한글 COM이 필요 없으므로 --with-com 없이도 검증합니다. 격리 워커
+// 실행 파일만 있으면 됩니다.
+var pdfWorkerExecutable = FindWorkerExecutable(FindRepositoryRoot());
+if (pdfWorkerExecutable is null)
+{
+    Console.WriteLine("SKIP: Hdiff.exe가 없어 PDF 워커 테스트를 건너뜁니다. src/Hdiff.UI를 먼저 빌드하세요.");
+}
+else
+{
+    var workerExecutable = pdfWorkerExecutable;
+    var pdfFixture = Path.Combine(fixtureDir, "pdf-text-fixture.pdf");
+    var pdfChangedFixture = Path.Combine(fixtureDir, "pdf-text-fixture-changed.pdf");
+    WritePdfFixture(pdfFixture, changed: false);
+    WritePdfFixture(pdfChangedFixture, changed: true);
+    var pdfDocument = ReadThroughWorker(workerExecutable, pdfFixture);
+    Expect(pdfDocument.Reader == "PDF PdfPig 직접 파서",
+        "PDF 파일은 격리 워커의 PdfPig reader를 사용해야 합니다.");
+    Expect(pdfDocument.Blocks.Select(block => block.Text).SequenceEqual(new[]
+    {
+        "PDF heading",
+        "Table row A B C",
+        "Value 100",
+    }), "PDF 단어 좌표를 위에서 아래, 같은 줄은 왼쪽에서 오른쪽 순서로 복원해야 합니다.");
+    var pdfChangedDocument = ReadThroughWorker(workerExecutable, pdfChangedFixture);
+    var pdfDiff = new DocumentDiffer().Compare(pdfDocument, pdfChangedDocument);
+    Expect(pdfDiff.Summary.Modified == 1
+        && pdfDiff.Summary.Inserted == 0
+        && pdfDiff.Summary.Deleted == 0,
+        "PDF 한 줄의 값이 달라지면 해당 비교 행 하나만 수정으로 표시해야 합니다.");
+    Console.WriteLine("PDF rows: " + string.Join(" | ", pdfDocument.ComparisonLines()));
+
+    // PDF는 인쇄된 줄을 그대로 주므로, 문단 앞쪽 한 낱말만 바뀌어도 그 뒤 줄바꿈이
+    // 전부 밀려 문단 전체가 바뀐 것처럼 보인다(재접힘 연쇄). reflow는 그 줄들을
+    // 문단으로 되돌려 실제로 바뀐 곳만 남긴다.
+    var wrappedFixture = Path.Combine(fixtureDir, "pdf-wrapped-fixture.pdf");
+    var wrappedChangedFixture = Path.Combine(fixtureDir, "pdf-wrapped-fixture-changed.pdf");
+    WriteWrappedPdfFixture(wrappedFixture, changed: false);
+    WriteWrappedPdfFixture(wrappedChangedFixture, changed: true);
+
+    var wrappedRaw = ReadThroughWorker(workerExecutable, wrappedFixture, reflowPdfParagraphs: false);
+    Expect(wrappedRaw.Blocks.Count == 5,
+        "reflow를 끄면 PDF의 물리적 줄을 그대로 비교 행으로 써야 합니다.");
+
+    var wrappedReflowed = ReadThroughWorker(workerExecutable, wrappedFixture);
+    Expect(wrappedReflowed.Blocks[0].Text
+            == "The evaluation term shall be five years from the date of approval and where necessary the term may be extended one single time and no further extension is allowed.",
+        "접힌 줄은 원래의 한 문단으로 다시 이어 붙여야 합니다.");
+    Expect(wrappedReflowed.Blocks.Count == 3,
+        "짧은 개조식 줄은 병합하지 않고 그대로 두어야 합니다.");
+    Expect(wrappedReflowed.Blocks.Skip(1).Select(block => block.Text)
+            .SequenceEqual(new[] { "1. First listed item", "2. Second listed item" }),
+        "번호 항목은 각각 별개 행으로 남아야 합니다.");
+
+    var rawChanged = ReadThroughWorker(workerExecutable, wrappedChangedFixture, reflowPdfParagraphs: false);
+    var reflowedChanged = ReadThroughWorker(workerExecutable, wrappedChangedFixture);
+    var rawDiff = new DocumentDiffer().Compare(wrappedRaw, rawChanged);
+    var reflowedDiff = new DocumentDiffer().Compare(wrappedReflowed, reflowedChanged);
+    Console.WriteLine($"PDF reflow: raw changed rows={rawDiff.Summary.Modified + rawDiff.Summary.Inserted + rawDiff.Summary.Deleted}, "
+        + $"reflowed={reflowedDiff.Summary.Modified + reflowedDiff.Summary.Inserted + reflowedDiff.Summary.Deleted}");
+    var rawChangedRows = rawDiff.Summary.Modified + rawDiff.Summary.Inserted + rawDiff.Summary.Deleted;
+    var reflowedChangedRows = reflowedDiff.Summary.Modified + reflowedDiff.Summary.Inserted + reflowedDiff.Summary.Deleted;
+    Expect(rawChangedRows >= 3,
+        "줄 단위로 비교하면 재접힘 때문에 문단의 모든 줄이 바뀐 것처럼 보여야 합니다(이 테스트의 전제).");
+    Expect(reflowedDiff.Summary.Modified == 1
+        && reflowedDiff.Summary.Inserted == 0
+        && reflowedDiff.Summary.Deleted == 0,
+        "문단으로 되돌리면 실제로 바뀐 문단 하나만 수정으로 남아야 합니다.");
+    Expect(reflowedChangedRows < rawChangedRows,
+        "reflow는 재접힘이 만든 가짜 변경을 줄여야 합니다.");
+    Console.WriteLine($"PASS: PDF PdfPig reading-order and paragraph reflow test ({pdfFixture})");
+}
+
 var hwpx = Path.Combine(fixtureDir, "sample.hwpx");
 WriteHwpx(hwpx, "제2조 적용", "HWPX도 한글 없이 읽는다.");
 var parsedHwpx = reader.Read(hwpx);
@@ -616,27 +688,6 @@ if (args.Contains("--with-com", StringComparer.OrdinalIgnoreCase) && OperatingSy
         }), "COM 폴백은 중첩 표 전후에서 부모 행을 끊고 내부 표를 독립된 행들로 출력해야 합니다.");
         Console.WriteLine($"PASS: COM fallback nested-table block test ({hancomNestedTableHwp})");
 
-        var pdfFixture = Path.Combine(fixtureDir, "pdf-text-fixture.pdf");
-        var pdfChangedFixture = Path.Combine(fixtureDir, "pdf-text-fixture-changed.pdf");
-        WritePdfFixture(pdfFixture, changed: false);
-        WritePdfFixture(pdfChangedFixture, changed: true);
-        var pdfDocument = ReadThroughWorker(workerExecutable, pdfFixture);
-        Expect(pdfDocument.Reader == "PDF PdfPig 직접 파서",
-            "PDF 파일은 격리 워커의 PdfPig reader를 사용해야 합니다.");
-        Expect(pdfDocument.Blocks.Select(block => block.Text).SequenceEqual(new[]
-        {
-            "PDF heading",
-            "Table row A B C",
-            "Value 100",
-        }), "PDF 단어 좌표를 위에서 아래, 같은 줄은 왼쪽에서 오른쪽 순서로 복원해야 합니다.");
-        var pdfChangedDocument = ReadThroughWorker(workerExecutable, pdfChangedFixture);
-        var pdfDiff = new DocumentDiffer().Compare(pdfDocument, pdfChangedDocument);
-        Expect(pdfDiff.Summary.Modified == 1
-            && pdfDiff.Summary.Inserted == 0
-            && pdfDiff.Summary.Deleted == 0,
-            "PDF 한 줄의 값이 달라지면 해당 비교 행 하나만 수정으로 표시해야 합니다.");
-        Console.WriteLine("PDF rows: " + string.Join(" | ", pdfDocument.ComparisonLines()));
-        Console.WriteLine($"PASS: PDF PdfPig reading-order test ({pdfFixture})");
 
         if (Type.GetTypeFromProgID("Word.Application") is null)
         {
@@ -820,11 +871,43 @@ static void WriteExcelFixture(string path, bool changed = false)
         """);
 }
 
-static void WritePdfFixture(string path, bool changed)
+static void WritePdfFixture(string path, bool changed) =>
+    WritePdfPage(path, changed
+        ? "BT\n/F1 12 Tf\n72 740 Td\n(PDF heading) Tj\n0 -24 Td\n(Table row A B C) Tj\n0 -24 Td\n(Value 125) Tj\nET\n"
+        : "BT\n/F1 12 Tf\n72 740 Td\n(PDF heading) Tj\n0 -24 Td\n(Table row A B C) Tj\n0 -24 Td\n(Value 100) Tj\nET\n");
+
+// 접힌 문단 세 줄 + 짧은 개조식 줄.
+//
+// changed 판에서는 문단 앞쪽에 낱말 하나("calendar")가 들어가면서 뒤따르는
+// 줄바꿈 위치가 전부 밀린다. 실제 PDF에서 일어나는 재접힘 연쇄이며, 줄 단위로
+// 비교하면 한 낱말 차이가 세 줄 전부의 차이로 보이게 만드는 원인이다.
+static void WriteWrappedPdfFixture(string path, bool changed)
+{
+    var paragraph = changed
+        ? new[]
+        {
+            "(The evaluation term shall be five calendar years from the date of)",
+            "(approval and where necessary the term may be extended one single)",
+            "(time and no further extension is allowed.)",
+        }
+        : new[]
+        {
+            "(The evaluation term shall be five years from the date of approval)",
+            "(and where necessary the term may be extended one single time and)",
+            "(no further extension is allowed.)",
+        };
+    var content = "BT\n/F1 12 Tf\n72 740 Td\n"
+        + paragraph[0] + " Tj\n0 -16 Td\n"
+        + paragraph[1] + " Tj\n0 -16 Td\n"
+        + paragraph[2] + " Tj\n0 -32 Td\n"
+        + "(1. First listed item) Tj\n0 -16 Td\n"
+        + "(2. Second listed item) Tj\nET\n";
+    WritePdfPage(path, content);
+}
+
+static void WritePdfPage(string path, string content)
 {
     if (File.Exists(path)) File.Delete(path);
-    var value = changed ? "Value 125" : "Value 100";
-    var content = $"BT\n/F1 12 Tf\n72 740 Td\n(PDF heading) Tj\n0 -24 Td\n(Table row A B C) Tj\n0 -24 Td\n({value}) Tj\nET\n";
     var objects = new[]
     {
         "<< /Type /Catalog /Pages 2 0 R >>",
@@ -1233,7 +1316,7 @@ static (string Text, List<string> Warnings) ReadThroughComFallback(string worker
     return (text, warnings);
 }
 
-static ParsedDocument ReadThroughWorker(string workerExecutable, string documentPath)
+static ParsedDocument ReadThroughWorker(string workerExecutable, string documentPath, bool reflowPdfParagraphs = true)
 {
     var request = JsonSerializer.Serialize(new
     {
@@ -1241,6 +1324,7 @@ static ParsedDocument ReadThroughWorker(string workerExecutable, string document
         AllowComFallback = true,
         IncludeMemos = false,
         ForceComFallback = false,
+        ReflowPdfParagraphs = reflowPdfParagraphs,
     });
 
     using var process = Process.Start(new ProcessStartInfo(workerExecutable, "--worker")

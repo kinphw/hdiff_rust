@@ -10,6 +10,7 @@ internal sealed class HdiffSettingsDialog : Form
     private readonly CheckBox _ignoreWhitespace = new() { Text = "Ignore Whitespace Changes", AutoSize = true };
     private readonly CheckBox _ignoreBlankLines = new() { Text = "Ignore Blank Lines", AutoSize = true };
     private readonly CheckBox _includeMemos = new() { Text = "Include Memos", AutoSize = true };
+    private readonly CheckBox _reflowPdf = new() { Text = "Reflow PDF Paragraphs", AutoSize = true };
 
     public HdiffSettingsDialog(
         string[] themeLabels,
@@ -22,6 +23,7 @@ internal sealed class HdiffSettingsDialog : Form
         bool ignoreWhitespaceChanges,
         bool ignoreBlankLines,
         bool includeMemos,
+        bool reflowPdfParagraphs,
         HdiffThemePalette theme)
     {
         Text = "Hdiff 설정";
@@ -46,6 +48,7 @@ internal sealed class HdiffSettingsDialog : Form
         _ignoreWhitespace.Checked = ignoreWhitespaceChanges;
         _ignoreBlankLines.Checked = ignoreBlankLines;
         _includeMemos.Checked = includeMemos;
+        _reflowPdf.Checked = reflowPdfParagraphs;
 
         var root = new TableLayoutPanel
         {
@@ -64,7 +67,7 @@ internal sealed class HdiffSettingsDialog : Form
         root.Controls.Add(CreateAppearanceGroup(), 0, 0);
         root.Controls.Add(CreateCheckGroup("View", _wrapLongLines, _rowSeparators, _textSelection), 0, 1);
         root.Controls.Add(CreateCheckGroup("Comparison", _ignoreWhitespace, _ignoreBlankLines), 0, 2);
-        root.Controls.Add(CreateCheckGroup("Document Content", _includeMemos), 0, 3);
+        root.Controls.Add(CreateCheckGroup("Document Content", _includeMemos, _reflowPdf), 0, 3);
         root.Controls.Add(CreateButtonRow(theme), 0, 5);
         Controls.Add(root);
 
@@ -79,6 +82,8 @@ internal sealed class HdiffSettingsDialog : Form
     public bool IgnoreWhitespaceChanges => _ignoreWhitespace.Checked;
     public bool IgnoreBlankLines => _ignoreBlankLines.Checked;
     public bool IncludeMemos => _includeMemos.Checked;
+
+    public bool ReflowPdfParagraphs => _reflowPdf.Checked;
 
     private GroupBox CreateAppearanceGroup()
     {
@@ -138,6 +143,7 @@ internal sealed class HdiffSettingsDialog : Form
             _ignoreWhitespace.Checked = true;
             _ignoreBlankLines.Checked = true;
             _includeMemos.Checked = false;
+            _reflowPdf.Checked = true;
         };
 
         ApplyButtonTheme(defaults, theme);

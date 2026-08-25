@@ -58,7 +58,7 @@ internal static class HwpWorkerEntry
         {
             try
             {
-                var document = new PdfTextReader().Read(request.Path);
+                var document = new PdfTextReader().Read(request.Path, request.ReflowPdfParagraphs);
                 return new WorkerResponse(true, document, null, document.Reader);
             }
             catch (Exception pdfError)
@@ -129,5 +129,6 @@ internal sealed record WorkerRequest(
     string Path,
     bool AllowComFallback,
     bool IncludeMemos = false,
-    bool ForceComFallback = false);
+    bool ForceComFallback = false,
+    bool ReflowPdfParagraphs = true);
 internal sealed record WorkerResponse(bool Ok, ParsedDocument? Document, string? Error, string? Reader);

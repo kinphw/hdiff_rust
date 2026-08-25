@@ -63,6 +63,11 @@ internal static class HdiffUserSettings
     public static void SaveIncludeMemos(bool include)
         => Save(Load() with { IncludeMemos = include });
 
+    public static bool LoadReflowPdfParagraphs() => Load().ReflowPdfParagraphs ?? true;
+
+    public static void SaveReflowPdfParagraphs(bool reflow)
+        => Save(Load() with { ReflowPdfParagraphs = reflow });
+
     private static Settings Load()
     {
         try
@@ -91,7 +96,7 @@ internal static class HdiffUserSettings
         }
     }
 
-    private static Settings EmptySettings() => new(null, null, null, null, null, null, null, null);
+    private static Settings EmptySettings() => new(null, null, null, null, null, null, null, null, null);
 
     private sealed record Settings(
         string? DiffFontSize,
@@ -101,5 +106,6 @@ internal static class HdiffUserSettings
         bool? IgnoreWhitespaceChanges,
         bool? IgnoreBlankLines,
         bool? TextSelectionEnabled,
-        bool? IncludeMemos);
+        bool? IncludeMemos,
+        bool? ReflowPdfParagraphs);
 }

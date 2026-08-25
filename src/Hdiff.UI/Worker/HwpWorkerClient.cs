@@ -6,7 +6,11 @@ namespace Hdiff.UI.Worker;
 
 internal sealed class HwpWorkerClient
 {
-    public ParsedDocument Read(string path, bool allowComFallback, bool includeMemos = false)
+    public ParsedDocument Read(
+        string path,
+        bool allowComFallback,
+        bool includeMemos = false,
+        bool reflowPdfParagraphs = true)
     {
         var workerPath = ResolveWorkerPath(path);
         using var process = Process.Start(new ProcessStartInfo(workerPath, "--worker")
@@ -17,7 +21,8 @@ internal sealed class HwpWorkerClient
             RedirectStandardOutput = true,
         }) ?? throw new InvalidOperationException("문서 파서 워커를 시작하지 못했습니다.");
 
-        process.StandardInput.WriteLine(JsonSerializer.Serialize(new WorkerRequest(path, allowComFallback, includeMemos)));
+        process.StandardInput.WriteLine(JsonSerializer.Serialize(
+            new WorkerRequest(path, allowComFallback, includeMemos, ForceComFallback: false, reflowPdfParagraphs)));
         process.StandardInput.Close();
         var timeoutMilliseconds = ExcelComReader.IsSupportedExtension(path)
             || WordComReader.IsSupportedExtension(path)

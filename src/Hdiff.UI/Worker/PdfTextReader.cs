@@ -18,7 +18,7 @@ internal sealed partial class PdfTextReader
     public static bool IsSupportedExtension(string path) =>
         Path.GetExtension(path).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
 
-    public ParsedDocument Read(string path)
+    public ParsedDocument Read(string path, bool reflowParagraphs = true)
     {
         if (!File.Exists(path)) throw new DocumentReadException($"파일을 찾을 수 없습니다: {path}");
         if (!IsSupportedExtension(path)) throw new DocumentReadException("PDF 지원 형식은 .pdf입니다.");
@@ -34,7 +34,7 @@ internal sealed partial class PdfTextReader
             {
                 try
                 {
-                    foreach (var line in ExtractPageLines(page))
+                    foreach (var line in ExtractPageLines(page, reflowParagraphs))
                     {
                         if (line.Length == 0) continue;
                         totalCharacters = checked(totalCharacters + line.Length);
@@ -72,7 +72,7 @@ internal sealed partial class PdfTextReader
         return new ParsedDocument(path, blocks, "PDF PdfPig 직접 파서", warnings);
     }
 
-    private static IReadOnlyList<string> ExtractPageLines(Page page)
+    private static IReadOnlyList<string> ExtractPageLines(Page page, bool reflowParagraphs)
     {
         var words = page.GetWords()
             .Where(word => !string.IsNullOrWhiteSpace(word.Text))
@@ -81,7 +81,7 @@ internal sealed partial class PdfTextReader
             .ToList();
         if (words.Count == 0) return Array.Empty<string>();
 
-        var lines = new List<string>();
+        var lines = new List<PdfLine>();
         var lineWords = new List<Word>();
         double lineBottom = 0;
         double lineTolerance = 0;
@@ -89,11 +89,18 @@ internal sealed partial class PdfTextReader
         void Flush()
         {
             if (lineWords.Count == 0) return;
-            var line = string.Join(" ", lineWords
-                .OrderBy(word => word.BoundingBox.Left)
-                .Select(word => word.Text));
-            line = Clean(line);
-            if (line.Length > 0) lines.Add(line);
+            var ordered = lineWords.OrderBy(word => word.BoundingBox.Left).ToList();
+            var text = Clean(string.Join(" ", ordered.Select(word => word.Text)));
+            if (text.Length > 0)
+            {
+                lines.Add(new PdfLine(
+                    text,
+                    ordered.Min(word => word.BoundingBox.Left),
+                    ordered.Max(word => word.BoundingBox.Right),
+                    ordered.Max(word => word.BoundingBox.Top),
+                    ordered.Min(word => word.BoundingBox.Bottom),
+                    ordered.Average(word => Math.Abs(word.BoundingBox.Height))));
+            }
             lineWords.Clear();
         }
 
@@ -120,8 +127,135 @@ internal sealed partial class PdfTextReader
             }
         }
         Flush();
-        return lines;
+
+        return reflowParagraphs
+            ? ReflowParagraphs(lines)
+            : lines.Select(line => line.Text).ToArray();
     }
+
+    /// <summary>
+    /// Puts wrapped lines back into the paragraph they came from.
+    ///
+    /// A PDF line ends for one of two reasons: the next word did not fit, or the
+    /// paragraph ended. Those look different on the page - a wrapped line runs
+    /// out to the text block's right edge, a paragraph's last line stops short -
+    /// so the decision is a measurement, not a reading of the text.
+    ///
+    /// Where the geometry cannot tell (short-line layouts such as 개조식 reports,
+    /// tables and forms, whose lines never reach the edge) nothing is merged and
+    /// the result is the same as not reflowing at all.
+    /// </summary>
+    private static IReadOnlyList<string> ReflowParagraphs(IReadOnlyList<PdfLine> lines)
+    {
+        if (lines.Count == 0) return Array.Empty<string>();
+
+        // The text block's edges, taken from the lines themselves so that margins,
+        // page size and orientation need no assumptions. The 90th percentile
+        // ignores the occasional line that overhangs the block.
+        var rightEdge = Percentile(lines.Select(line => line.Right), 0.9);
+        var bodyLeft = Percentile(lines.Select(line => line.Left), 0.5);
+        var averageHeight = lines.Average(line => line.Height);
+        // A wrapped line stops short of the edge by however wide the word that
+        // did not fit was, so the tolerance is measured in characters - not in
+        // line height, which is far too tight and leaves real paragraphs split.
+        var totalCharacters = Math.Max(1, lines.Sum(line => line.Text.Length));
+        var averageCharacterWidth = lines.Sum(line => line.Right - line.Left) / totalCharacters;
+        var fullLineSlack = Math.Max(averageCharacterWidth * 7, averageHeight * 1.2);
+
+        var paragraphs = new List<string>();
+        var current = new List<PdfLine>();
+
+        void Close()
+        {
+            if (current.Count == 0) return;
+            paragraphs.Add(JoinWrapped(current));
+            current.Clear();
+        }
+
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            current.Add(line);
+            if (index == lines.Count - 1)
+            {
+                Close();
+                break;
+            }
+
+            var next = lines[index + 1];
+            if (!ContinuesParagraph(line, next, rightEdge, bodyLeft, fullLineSlack, averageHeight)) Close();
+        }
+
+        Close();
+        return paragraphs;
+    }
+
+    private static double Percentile(IEnumerable<double> values, double fraction)
+    {
+        var sorted = values.OrderBy(value => value).ToArray();
+        var index = Math.Clamp((int)(sorted.Length * fraction), 0, sorted.Length - 1);
+        return sorted[index];
+    }
+
+    private static bool ContinuesParagraph(
+        PdfLine line,
+        PdfLine next,
+        double rightEdge,
+        double bodyLeft,
+        double fullLineSlack,
+        double averageHeight)
+    {
+        // The line stopped well before the edge: the paragraph ended there.
+        if (line.Right < rightEdge - fullLineSlack) return false;
+
+        // A wider gap than normal leading separates blocks, not wrapped lines.
+        var gap = line.Bottom - next.Top;
+        if (gap > averageHeight * 0.9) return false;
+
+        // The next line opens a new block of its own.
+        if (next.Left > bodyLeft + (averageHeight * 0.8)) return false;
+        return !StartsNewBlock(next.Text);
+    }
+
+    /// <summary>
+    /// Openers that begin a block no matter how full the line above was:
+    /// 조문, numbered and bulleted items, and 개조식 markers.
+    /// </summary>
+    private static bool StartsNewBlock(string text) => BlockOpener().IsMatch(text);
+
+    /// <summary>
+    /// Korean text wraps without a space at the break, so joining with one would
+    /// insert a space that is not in the document. Latin text does need it.
+    /// </summary>
+    private static string JoinWrapped(IReadOnlyList<PdfLine> lines)
+    {
+        var builder = new System.Text.StringBuilder(lines[0].Text);
+        for (var index = 1; index < lines.Count; index++)
+        {
+            var next = lines[index].Text;
+            if (next.Length == 0) continue;
+            if (builder.Length > 0 && builder[^1] == '-' && char.IsLower(next[0]))
+            {
+                builder.Length -= 1;
+                builder.Append(next);
+                continue;
+            }
+            if (builder.Length > 0 && NeedsSpace(builder[^1], next[0])) builder.Append(' ');
+            builder.Append(next);
+        }
+        return builder.ToString();
+    }
+
+    private static bool NeedsSpace(char left, char right) =>
+        !(IsWide(left) && IsWide(right)) && !char.IsWhiteSpace(left) && !char.IsWhiteSpace(right);
+
+    private static bool IsWide(char character) =>
+        character is >= '\uac00' and <= '\ud7a3'      // 한글 음절
+        || character is >= '\u3130' and <= '\u318f'   // 한글 자모
+        || character is >= '\u4e00' and <= '\u9fff'   // 한자
+        || character is >= '\u3000' and <= '\u303f';  // CJK 문장부호
+
+    private sealed record PdfLine(string Text, double Left, double Right, double Top, double Bottom, double Height);
 
     private static string Clean(string text)
     {
@@ -144,4 +278,7 @@ internal sealed partial class PdfTextReader
 
     [GeneratedRegex(@"[\x00-\x08\x0B\x0C\x0E-\x1F]")]
     private static partial Regex ControlCharacters();
+
+    [GeneratedRegex(@"^\s*(제\s*\d+\s*[조장절관항]|\d+[.)]|[(（]\d+[)）]|[①-⑳]|[가-힣][.)]|[-·•▪□○◦▶*])\s")]
+    private static partial Regex BlockOpener();
 }
