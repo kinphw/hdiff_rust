@@ -27,6 +27,9 @@ internal sealed class DiffOverviewMap : Control
         Cursor = Cursors.Hand;
         Dock = DockStyle.Fill;
         DoubleBuffered = true;
+        // The viewport box is drawn against the client edges, so a resize has to
+        // repaint the whole map rather than only the newly exposed strip.
+        SetStyle(ControlStyles.ResizeRedraw, true);
         Margin = Padding.Empty;
         MinimumSize = new Size(42, 0);
         Size = new Size(42, 100);

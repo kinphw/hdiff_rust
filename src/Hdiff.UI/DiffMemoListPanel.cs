@@ -180,6 +180,7 @@ internal sealed class DiffMemoListPanel : Panel
             var quote = Wrap(Shorten(Flatten(quoted), 160), _theme.MemoSurfaceBack, _theme.MutedText, 8.5f, 260);
             quote.Margin = new Padding(0, 7, 0, 0);
             quote.Padding = new Padding(7, 3, 0, 3);
+            quote.Resize += (_, _) => quote.Invalidate();
             quote.Paint += (_, e) =>
             {
                 using var accent = new Pen(_theme.MemoAccent, 2);
@@ -392,7 +393,7 @@ internal sealed class DiffMemoListPanel : Panel
     }
     private static TableLayoutPanel Table(Color backColor, Padding padding)
     {
-        var table = new TableLayoutPanel
+        var table = new PaintedTable
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -431,7 +432,16 @@ internal sealed class DiffMemoListPanel : Panel
     private static string Flatten(string t) => t.Replace("\r\n", "↵", StringComparison.Ordinal).Replace("\n", "↵", StringComparison.Ordinal).Replace("\r", "↵", StringComparison.Ordinal);
     private static string Shorten(string t, int n) => t.Length <= n ? t : t[..n] + "…";
 
-    private sealed class SelectableMemoCard : TableLayoutPanel
+    /// <summary>
+    /// A table that paints its own border. Repainting on resize is what keeps a
+    /// widened card from showing the border drawn at its previous edge.
+    /// </summary>
+    private class PaintedTable : TableLayoutPanel
+    {
+        public PaintedTable() => SetStyle(ControlStyles.ResizeRedraw, true);
+    }
+
+    private sealed class SelectableMemoCard : PaintedTable
     {
         public SelectableMemoCard() => SetStyle(ControlStyles.Selectable, true);
         protected override bool IsInputKey(Keys keyData) =>

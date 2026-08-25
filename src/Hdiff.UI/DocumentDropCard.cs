@@ -38,6 +38,11 @@ internal sealed class DocumentDropCard : UserControl
     {
         _caption = caption;
         _accentColor = accentColor;
+        // The card draws its own border at the client edge, so growing it must
+        // repaint all of it. Without this the border stays where the old edge
+        // was and the card is left with a stray line inside it.
+        SetStyle(ControlStyles.ResizeRedraw, true);
+        DoubleBuffered = true;
         AllowDrop = true;
         BackColor = Color.White;
         Cursor = Cursors.Default;
