@@ -503,7 +503,7 @@ mark.memo-range{background:color-mix(in srgb,var(--memo-accent) 22%,transparent)
 @keyframes memo-flash{from{background:var(--memo-card)}to{background:transparent}}
 .memo-panel{grid-column:2;grid-row:1;min-width:0;min-height:0;display:none;grid-template-rows:auto minmax(0,1fr);background:var(--surface);border-left:1px solid var(--border)}
 .with-memos .memo-panel{display:grid}
-.memo-panel-head{padding:6px 8px 7px 12px;background:var(--header);border-bottom:1px solid var(--border);font-size:11px}
+.memo-panel-head{min-width:0;overflow:hidden;padding:6px 8px 7px 12px;background:var(--header);border-bottom:1px solid var(--border);font-size:11px}
 .memo-panel-title{display:flex;align-items:center;gap:7px}
 .memo-panel-count{padding:1px 6px;border:1px solid var(--memo-accent);border-radius:8px;color:var(--memo-accent);font-size:10px;font-weight:700}
 .memo-panel-close{margin-left:auto;width:22px;height:22px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:13px;line-height:1;cursor:pointer}
@@ -524,7 +524,7 @@ mark.memo-range{background:color-mix(in srgb,var(--memo-accent) 22%,transparent)
 .memo-panel-hint{margin:6px 0 0;color:var(--muted);font-size:10px;line-height:1.5}
 .memo-saved{margin:5px 0 0;display:flex;align-items:center;gap:6px;color:var(--added-text);font-size:10px}
 .memo-saved.pending{color:var(--muted)}
-.memo-saved span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.memo-saved span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .memo-relocate{flex:none;padding:1px 6px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:10px;cursor:pointer}
 .memo-replies{display:flex;flex-direction:column;gap:6px}
 .memo-replies:not(:empty){margin-top:8px}
@@ -1278,7 +1278,11 @@ mark.memo-range{background:color-mix(in srgb,var(--memo-accent) 22%,transparent)
         const writable = await saveHandle.createWritable();
         await writable.write(markup);
         await writable.close();
-        finishSave(round, `저장됨 · ${saveHandle.name} · ${stamp(new Date())}`, true);
+        finishSave(
+          round,
+          `저장됨 · ${saveHandle.name} · ${stamp(new Date())} — 이 창이 곧 그 파일이며, 계속 쓰고 저장하면 같은 파일이 갱신됩니다.`,
+          true,
+          saveHandle.name);
         return;
       } catch (error) {
         // The reader closed the dialog: leave everything as it was.
@@ -1304,22 +1308,34 @@ mark.memo-range{background:color-mix(in srgb,var(--memo-accent) 22%,transparent)
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       // A plain download reports nothing back, and this browser may still be
       // asking the reader where to put it, so do not claim it is on disk.
-      finishSave(round, `내려받는 중 · ${name} — 브라우저 저장 창이 뜨면 저장을 눌러 주세요`, false);
+      finishSave(
+        round,
+        `내려받는 중 · ${name} — 브라우저 저장 창이 뜨면 저장을 눌러 주세요. 이 창은 원래 파일 그대로입니다.`,
+        false,
+        null);
     } catch (error) {
       restore();
       alert('이 브라우저에서 파일 저장이 막혀 있습니다. 다른 브라우저로 열어 주세요.');
     }
   }
 
-  function finishSave(round, message, confirmed) {
+  function finishSave(round, message, confirmed, fileName) {
     savedRound = round;
     dirty = false;
     if (unsavedBadge) unsavedBadge.hidden = true;
-    if (savedText) savedText.textContent = message;
+    if (savedText) {
+      savedText.textContent = message;
+      // The line is one ellipsised row, so keep the full text reachable.
+      savedText.title = message;
+    }
     if (savedLine) {
       savedLine.classList.toggle('pending', !confirmed);
       savedLine.hidden = false;
     }
+    // A browser cannot open the file it just wrote. With a picked file it does
+    // not need to: this tab holds exactly what was written and saving again
+    // overwrites the same file, so name the tab after it and say so.
+    if (confirmed && fileName) document.title = fileName;
     // Only a picked file can be written again without asking.
     if (relocateButton) relocateButton.hidden = !saveHandle;
   }
