@@ -580,14 +580,20 @@ internal sealed class SideBySideDiffView : UserControl
             {
                 if (_pinnedDiffRow == value) return;
                 _pinnedDiffRow = value;
-                _pinnedMemoTarget = value is null ? null : new DiffMemoTarget(value.Value,DiffMemoSide.New);
+                _pinnedMemoTarget = value is null ? null : new DiffMemoTarget(value.Value, DiffMemoSide.New);
                 Invalidate();
             }
         }
         public DiffMemoTarget? PinnedMemoTarget
         {
             get => _pinnedMemoTarget;
-            set { if(_pinnedMemoTarget==value)return;_pinnedMemoTarget=value;_pinnedDiffRow=value?.RowIndex;Invalidate(); }
+            set
+            {
+                if (_pinnedMemoTarget == value) return;
+                _pinnedMemoTarget = value;
+                _pinnedDiffRow = value?.RowIndex;
+                Invalidate();
+            }
         }
 
         public bool TryGetPinnedMemoFlagBounds(out Rectangle bounds)
@@ -789,7 +795,12 @@ internal sealed class SideBySideDiffView : UserControl
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if(e.Button==MouseButtons.Left&&TryGetMemoAdd(e.Location,out var add)){Focus();MemoAddRequested?.Invoke(this,add);return;}
+            if (e.Button == MouseButtons.Left && TryGetMemoAdd(e.Location, out var addTarget))
+            {
+                Focus();
+                MemoAddRequested?.Invoke(this, addTarget);
+                return;
+            }
             if (e.Button == MouseButtons.Left && TryGetMemoFlag(e.Location, out var memoTarget))
             {
                 Focus();
@@ -812,7 +823,7 @@ internal sealed class SideBySideDiffView : UserControl
         {
             base.OnMouseMove(e);
             UpdateHover(e.Location);
-            Cursor = TryGetMemoAdd(e.Location,out _) || TryGetMemoFlag(e.Location, out _)
+            Cursor = TryGetMemoAdd(e.Location, out _) || TryGetMemoFlag(e.Location, out _)
                 ? Cursors.Hand
                 : _textSelectionEnabled && IsInsideDocumentColumn(e.Location)
                     ? Cursors.IBeam
@@ -824,7 +835,14 @@ internal sealed class SideBySideDiffView : UserControl
             _selectionEnd = position;
             Invalidate();
         }
-        protected override void OnMouseLeave(EventArgs e){base.OnMouseLeave(e);if(_hoverMemoTarget is null)return;_hoverMemoTarget=null;_hoverVisualRow=-1;Invalidate();}
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hoverMemoTarget is null) return;
+            _hoverMemoTarget = null;
+            _hoverVisualRow = -1;
+            Invalidate();
+        }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
@@ -848,7 +866,7 @@ internal sealed class SideBySideDiffView : UserControl
                     DrawCell(e.Graphics, _oldContentBounds, y, index, row.OldLine, row.OldFragments, row.Kind, row.Presentation, oldSide: true, row.OldImaginary);
                     DrawCell(e.Graphics, _newContentBounds, y, index, row.NewLine, row.NewFragments, row.Kind, row.Presentation, oldSide: false, row.NewImaginary);
                     DrawMemoIndicators(e.Graphics, y, index, row);
-                    DrawMemoAdd(e.Graphics,y,index,row);
+                    DrawMemoAdd(e.Graphics, y, index, row);
                     if (_showRowSeparators && IsLastVisualLineOfDiffRow(index))
                         DrawRowSeparator(e.Graphics, y + RowHeight - 1);
                 }
@@ -918,34 +936,81 @@ internal sealed class SideBySideDiffView : UserControl
                 DrawMemoFlag(graphics, GetMemoFlagBounds(row, y, oldSide: false, index), numbers.New[index]);
         }
 
-        private void DrawMemoAdd(Graphics g,int y,int visual,VisualDiffRow row)
+        /// <summary>The hovered cell offers a plus button, the same affordance the shared HTML has.</summary>
+        private void DrawMemoAdd(Graphics graphics, int y, int visualRowIndex, VisualDiffRow row)
         {
-            if(_hoverMemoTarget is not { } t||t.RowIndex!=row.DiffRowIndex||visual!=_hoverVisualRow)return;
-            var r=GetMemoAddBounds(row,y,t.Side==DiffMemoSide.Old);if(r.IsEmpty)return;var s=g.SmoothingMode;g.SmoothingMode=SmoothingMode.AntiAlias;
-            using var fill=new SolidBrush(_theme.SurfaceBack);using var pen=new Pen(_theme.MemoAccent);g.FillEllipse(fill,r);g.DrawEllipse(pen,r);
-            var x=r.Left+r.Width/2;var cy=r.Top+r.Height/2;g.DrawLine(pen,x-4,cy,x+4,cy);g.DrawLine(pen,x,cy-4,x,cy+4);g.SmoothingMode=s;
+            if (_hoverMemoTarget is not { } hovered
+                || hovered.RowIndex != row.DiffRowIndex
+                || visualRowIndex != _hoverVisualRow) return;
+
+            var bounds = GetMemoAddBounds(row, y, hovered.Side == DiffMemoSide.Old);
+            if (bounds.IsEmpty) return;
+
+            var smoothing = graphics.SmoothingMode;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var fill = new SolidBrush(_theme.SurfaceBack))
+            using (var pen = new Pen(_theme.MemoAccent))
+            {
+                graphics.FillEllipse(fill, bounds);
+                graphics.DrawEllipse(pen, bounds);
+                var centerX = bounds.Left + (bounds.Width / 2);
+                var centerY = bounds.Top + (bounds.Height / 2);
+                graphics.DrawLine(pen, centerX - 4, centerY, centerX + 4, centerY);
+                graphics.DrawLine(pen, centerX, centerY - 4, centerX, centerY + 4);
+            }
+            graphics.SmoothingMode = smoothing;
         }
 
-        private Rectangle GetMemoAddBounds(VisualDiffRow row,int y,bool old)
+        /// <summary>The button sits left of whatever memo flags the cell already carries.</summary>
+        private Rectangle GetMemoAddBounds(VisualDiffRow row, int y, bool oldSide)
         {
-            if(old?row.OldImaginary:row.NewImaginary)return Rectangle.Empty;var cell=old?_oldContentBounds:_newContentBounds;
-            var flagCount=GetMemoCount(row.DiffRowIndex,old);
-            var right=cell.Right-MemoFlagRightMargin-(flagCount>0?flagCount*(MemoFlagWidth+3)+2:0);
-            return new Rectangle(right-MemoAddSize,y+Math.Max(1,(RowHeight-MemoAddSize)/2),MemoAddSize,MemoAddSize);
+            if (oldSide ? row.OldImaginary : row.NewImaginary) return Rectangle.Empty;
+
+            var cell = oldSide ? _oldContentBounds : _newContentBounds;
+            var flagCount = GetMemoCount(row.DiffRowIndex, oldSide);
+            var right = cell.Right - MemoFlagRightMargin - (flagCount > 0 ? (flagCount * (MemoFlagWidth + 3)) + 2 : 0);
+            return new Rectangle(
+                right - MemoAddSize,
+                y + Math.Max(1, (RowHeight - MemoAddSize) / 2),
+                MemoAddSize,
+                MemoAddSize);
         }
 
-        private void UpdateHover(Point p)
+        private void UpdateHover(Point location)
         {
-            DiffMemoTarget? next=null;var visual=-1;var row=GetDiffRowAt(p);var side=GetSide(p);
-            if(row>=0&&side is not null){next=new DiffMemoTarget(row,ResolveSide(row,side.Value?DiffMemoSide.Old:DiffMemoSide.New));visual=(ScrollOffset+p.Y)/RowHeight;}
-            if(next==_hoverMemoTarget&&visual==_hoverVisualRow)return;_hoverMemoTarget=next;_hoverVisualRow=visual;Invalidate();
+            DiffMemoTarget? hovered = null;
+            var visualRow = -1;
+            var diffRow = GetDiffRowAt(location);
+            var oldSide = GetSide(location);
+            if (diffRow >= 0 && oldSide is not null)
+            {
+                var side = oldSide.Value ? DiffMemoSide.Old : DiffMemoSide.New;
+                hovered = new DiffMemoTarget(diffRow, ResolveSide(diffRow, side));
+                visualRow = (ScrollOffset + location.Y) / RowHeight;
+            }
+
+            if (hovered == _hoverMemoTarget && visualRow == _hoverVisualRow) return;
+            _hoverMemoTarget = hovered;
+            _hoverVisualRow = visualRow;
+            Invalidate();
         }
 
-        private bool TryGetMemoAdd(Point p,out DiffMemoTarget target)
+        private bool TryGetMemoAdd(Point location, out DiffMemoTarget target)
         {
-            target=default;if(_hoverMemoTarget is not { } t||_rows.Count==0)return false;var visual=(ScrollOffset+p.Y)/RowHeight;
-            if(visual<0||visual>=_rows.Count||visual!=_hoverVisualRow)return false;var row=_rows[visual];if(row.DiffRowIndex!=t.RowIndex)return false;
-            var y=visual*RowHeight-ScrollOffset;if(!GetMemoAddBounds(row,y,t.Side==DiffMemoSide.Old).Contains(p))return false;target=t;return true;
+            target = default;
+            if (_hoverMemoTarget is not { } hovered || _rows.Count == 0) return false;
+
+            var visualRow = (ScrollOffset + location.Y) / RowHeight;
+            if (visualRow < 0 || visualRow >= _rows.Count || visualRow != _hoverVisualRow) return false;
+
+            var row = _rows[visualRow];
+            if (row.DiffRowIndex != hovered.RowIndex) return false;
+
+            var y = (visualRow * RowHeight) - ScrollOffset;
+            if (!GetMemoAddBounds(row, y, hovered.Side == DiffMemoSide.Old).Contains(location)) return false;
+
+            target = hovered;
+            return true;
         }
 
         private void DrawMemoFlag(Graphics graphics, Rectangle bounds, int number)

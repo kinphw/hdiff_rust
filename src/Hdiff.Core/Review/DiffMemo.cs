@@ -275,6 +275,6 @@ public sealed class DiffMemoStore
         var byRow = leftRow.CompareTo(rightRow);
         if (byRow != 0) return byRow;
         var byCreated = left.CreatedAt.CompareTo(right.CreatedAt);
-        return byCreated != 0 ? byCreated : StringComparer.Ordinal.Compare(left.Id,right.Id);
+        return byCreated != 0 ? byCreated : StringComparer.Ordinal.Compare(left.Id, right.Id);
     });
 }
