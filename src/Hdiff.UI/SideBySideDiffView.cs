@@ -462,7 +462,11 @@ internal sealed class SideBySideDiffView : UserControl
     private static readonly TextFormatFlags TextFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
     /// <summary>One comparison cell: the row plus the column it belongs to.</summary>
-    internal readonly record struct DiffMemoTarget(int RowIndex, DiffMemoSide Side, int? MemoNumber = null);
+    internal readonly record struct DiffMemoTarget(
+        int RowIndex,
+        DiffMemoSide Side,
+        int? MemoNumber = null,
+        string? SelectedText = null);
 
     private sealed record VisualDiffRow(
         int DiffRowIndex,
@@ -512,6 +516,7 @@ internal sealed class SideBySideDiffView : UserControl
         private readonly ToolStripMenuItem _openMemoItem = new("검토 메모 보기…");
         private int _contextDiffRow = -1;
         private DiffMemoSide _contextSide = DiffMemoSide.New;
+        private string? _contextSelectedText;
 
         public DiffCanvas()
         {
@@ -548,7 +553,11 @@ internal sealed class SideBySideDiffView : UserControl
                 _contextSide = ResolveSide(_contextDiffRow, GetSide(location) == true ? DiffMemoSide.Old : DiffMemoSide.New);
                 _copySelectionItem.Enabled = _textSelectionEnabled && HasSelection;
                 _selectAllItem.Enabled = _textSelectionEnabled && _rows.Count > 0;
-                _addMemoItem.Text = _contextSide == DiffMemoSide.Old ? "변경 전에 검토 메모 추가…" : "변경 후에 검토 메모 추가…";
+                _contextSelectedText = GetSelectedPhrase(_contextDiffRow, _contextSide);
+                var column = _contextSide == DiffMemoSide.Old ? "변경 전" : "변경 후";
+                _addMemoItem.Text = _contextSelectedText is null
+                    ? $"{column}에 검토 메모 추가…"
+                    : $"선택한 문구에 검토 메모 추가…";
                 _addMemoItem.Enabled = _contextDiffRow >= 0;
                 _openMemoItem.Enabled = _contextDiffRow >= 0
                     && GetMemoCount(_contextDiffRow, _contextSide == DiffMemoSide.Old) > 0;
@@ -655,7 +664,28 @@ internal sealed class SideBySideDiffView : UserControl
         private void RequestMemo(EventHandler<DiffMemoTarget>? handler)
         {
             if (_contextDiffRow < 0) return;
-            handler?.Invoke(this, new DiffMemoTarget(_contextDiffRow, _contextSide));
+            handler?.Invoke(this, new DiffMemoTarget(
+                _contextDiffRow,
+                _contextSide,
+                SelectedText: _contextSelectedText));
+        }
+
+        /// <summary>
+        /// The phrase the reviewer highlighted, but only when the whole
+        /// selection sits inside the cell the memo is being written on. A
+        /// selection that runs across rows says nothing about one paragraph.
+        /// </summary>
+        private string? GetSelectedPhrase(int diffRowIndex, DiffMemoSide side)
+        {
+            if (diffRowIndex < 0 || !HasSelection) return null;
+            var (start, end) = NormalizedSelection();
+            if (start.OldSide != (side == DiffMemoSide.Old)) return null;
+            if (start.VisualRow < 0 || end.VisualRow >= _rows.Count) return null;
+            if (_rows[start.VisualRow].DiffRowIndex != diffRowIndex) return null;
+            if (_rows[end.VisualRow].DiffRowIndex != diffRowIndex) return null;
+
+            var phrase = GetSelectedText().Trim();
+            return phrase.Length == 0 ? null : phrase;
         }
 
         public int ScrollOffset { get; set; }
@@ -776,8 +806,13 @@ internal sealed class SideBySideDiffView : UserControl
             if (_selectionAnchor is { } anchor && anchor.VisualRow >= 0 && anchor.VisualRow < _rows.Count)
             {
                 var selectedRow = _rows[anchor.VisualRow].DiffRowIndex;
-                var selectedSide = anchor.OldSide ? DiffMemoSide.Old : DiffMemoSide.New;
-                return new DiffMemoTarget(selectedRow, ResolveSide(selectedRow, selectedSide));
+                var selectedSide = ResolveSide(
+                    selectedRow,
+                    anchor.OldSide ? DiffMemoSide.Old : DiffMemoSide.New);
+                return new DiffMemoTarget(
+                    selectedRow,
+                    selectedSide,
+                    SelectedText: GetSelectedPhrase(selectedRow, selectedSide));
             }
 
             var location = PointToClient(Cursor.Position);

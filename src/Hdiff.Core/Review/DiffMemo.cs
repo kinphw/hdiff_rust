@@ -20,16 +20,27 @@ public sealed record DiffMemoAnchor(
     DiffChangeKind Kind,
     string? OldText,
     string? NewText,
-    DiffMemoSide Side)
+    DiffMemoSide Side,
+    string? SelectedText = null)
 {
     public const int OrphanedRowIndex = -1;
 
     public bool IsOrphaned => RowIndex < 0;
 
-    /// <summary>The paragraph a reader sees the memo next to.</summary>
-    public string Quote => Side == DiffMemoSide.Old
+    /// <summary>The memo is about this phrase rather than the whole paragraph.</summary>
+    public bool HasSelectedText => !string.IsNullOrEmpty(SelectedText);
+
+    /// <summary>The paragraph the memo is attached to.</summary>
+    public string Paragraph => Side == DiffMemoSide.Old
         ? OldText ?? NewText ?? string.Empty
         : NewText ?? OldText ?? string.Empty;
+
+    /// <summary>
+    /// What the memo quotes, or null when the reviewer did not highlight
+    /// anything. Quoting the whole paragraph back at the reader only pushed the
+    /// memo text out of sight, so a memo without a selection shows no quote.
+    /// </summary>
+    public string? Quote => SelectedText;
 
     /// <summary>
     /// A memo written on an empty cell would have nothing to point at, so a
@@ -89,7 +100,8 @@ public sealed class DiffMemoStore
         DiffMemoSide side,
         string author,
         string text,
-        DateTimeOffset createdAt)
+        DateTimeOffset createdAt,
+        string? selectedText = null)
     {
         ArgumentNullException.ThrowIfNull(diff);
         if (rowIndex < 0 || rowIndex >= diff.Rows.Count)
@@ -98,7 +110,7 @@ public sealed class DiffMemoStore
         var row = diff.Rows[rowIndex];
         var memo = new DiffMemo(
             Guid.NewGuid().ToString("n"),
-            new DiffMemoAnchor(rowIndex, row.Kind, row.OldText, row.NewText, DiffMemoAnchor.ResolveSide(row, side)),
+            CreateAnchor(rowIndex, row, side, selectedText),
             author,
             text,
             createdAt,
@@ -107,6 +119,27 @@ public sealed class DiffMemoStore
         Sort();
         Changed?.Invoke(this, EventArgs.Empty);
         return memo;
+    }
+
+    /// <summary>
+    /// Keeps a selected phrase only when it really is part of the paragraph it
+    /// is anchored to, so a stale quote can never outlive the text it came from.
+    /// </summary>
+    private static DiffMemoAnchor CreateAnchor(int rowIndex, DiffRow row, DiffMemoSide side, string? selectedText)
+    {
+        var resolvedSide = DiffMemoAnchor.ResolveSide(row, side);
+        var anchor = new DiffMemoAnchor(rowIndex, row.Kind, row.OldText, row.NewText, resolvedSide);
+        return anchor with { SelectedText = KeepSelection(anchor, selectedText) };
+    }
+
+    private static string? KeepSelection(DiffMemoAnchor anchor, string? selectedText)
+    {
+        if (string.IsNullOrWhiteSpace(selectedText)) return null;
+        var phrase = selectedText.Trim();
+        if (phrase.Length == 0) return null;
+        // A phrase equal to the whole paragraph adds nothing over the default.
+        if (string.Equals(phrase, anchor.Paragraph, StringComparison.Ordinal)) return null;
+        return anchor.Paragraph.Contains(phrase, StringComparison.Ordinal) ? phrase : null;
     }
 
     public bool Update(string id, string author, string text, DateTimeOffset updatedAt)
@@ -224,12 +257,7 @@ public sealed class DiffMemoStore
             {
                 Anchor = resolved is null
                     ? anchor with { RowIndex = DiffMemoAnchor.OrphanedRowIndex }
-                    : new DiffMemoAnchor(
-                        rowIndex,
-                        resolved.Kind,
-                        resolved.OldText,
-                        resolved.NewText,
-                        DiffMemoAnchor.ResolveSide(resolved, anchor.Side)),
+                    : CreateAnchor(rowIndex, resolved, anchor.Side, anchor.SelectedText),
             };
         }
 

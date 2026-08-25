@@ -245,10 +245,15 @@ public static class HtmlDiffExporter
                 .Append("</span><span class=\"memo-kind ").Append(KindClass(memo.Anchor.Kind)).Append("\">")
                 .Append(KindLabel(memo.Anchor.Kind)).Append("</span><span class=\"memo-where\">")
                 .Append(Encode(orphaned ? "위치 없음" : DescribePosition(row!)))
-                .AppendLine("</span></header>")
-                .Append("<blockquote class=\"memo-quote\">").Append(Encode(Shorten(memo.Anchor.Quote, 160)))
-                .AppendLine("</blockquote>")
-                .Append("<p class=\"memo-body\">").Append(EncodeMultiline(memo.Text))
+                .AppendLine("</span></header>");
+            // Only a highlighted phrase is quoted. Repeating the whole paragraph
+            // pushed the memo itself out of view, which is what a reader is here for.
+            if (memo.Anchor.Quote is { } quote)
+            {
+                builder.Append("<blockquote class=\"memo-quote\">").Append(Encode(Shorten(quote, 160)))
+                    .AppendLine("</blockquote>");
+            }
+            builder.Append("<p class=\"memo-body\">").Append(EncodeMultiline(memo.Text))
                 .AppendLine("</p>")
                 .Append("<footer class=\"memo-card-foot\"><span>").Append(Encode(memo.Author))
                 .Append("</span><span>").Append(Encode(memo.LastEditedAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)))
@@ -963,6 +968,19 @@ button{font:inherit}
     return pair.querySelector(`.${resolveSide(pair, side)}-side`);
   }
 
+  /**
+   * The phrase the reader highlighted, but only when the whole selection sits
+   * inside this one cell. Anything wider says nothing about a single paragraph.
+   */
+  function selectedPhrase(side) {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return '';
+    const range = selection.getRangeAt(0);
+    if (!side.contains(range.commonAncestorContainer)) return '';
+    const phrase = selection.toString().trim();
+    return phrase.length === 0 ? '' : phrase;
+  }
+
   function rowText(side) {
     return [...side.querySelectorAll('.line-text > span')].map(span => span.textContent).join('');
   }
@@ -1032,7 +1050,7 @@ button{font:inherit}
     else memoList.append(card);
   }
 
-  function createMemo(pair, sideName, author, text) {
+  function createMemo(pair, sideName, author, text, quote) {
     const rowIndex = Number(pair.dataset.row);
     const kind = rowKind(pair);
     const resolved = resolveSide(pair, sideName);
@@ -1057,9 +1075,11 @@ button{font:inherit}
     const foot = element('footer', 'memo-card-foot');
     foot.append(element('span', null, author), element('span', null, stamp(new Date())));
 
+    card.append(head);
+    // Only a highlighted phrase is quoted; otherwise the memo text starts right
+    // away instead of being buried under the whole paragraph.
+    if (quote) card.append(element('blockquote', 'memo-quote', shorten(quote, 160)));
     card.append(
-      head,
-      element('blockquote', 'memo-quote', shorten(rowText(side), 160)),
       element('p', 'memo-body', text),
       foot,
       element('div', 'memo-replies'));
@@ -1083,7 +1103,7 @@ button{font:inherit}
     return card;
   }
 
-  function openMemoDraft(pair, sideName) {
+  function openMemoDraft(pair, sideName, quote) {
     memoList.querySelector('.memo-draft')?.remove();
     const resolved = resolveSide(pair, sideName);
     const draft = element('article', 'memo-card memo-draft');
@@ -1102,10 +1122,9 @@ button{font:inherit}
     const cancel = actionButton('reply-cancel', '취소');
     buttons.append(cancel, save);
     editor.append(area, buttons);
-    draft.append(
-      head,
-      element('blockquote', 'memo-quote', shorten(rowText(sideElement(pair, resolved)), 160)),
-      editor);
+    draft.append(head);
+    if (quote) draft.append(element('blockquote', 'memo-quote', shorten(quote, 160)));
+    draft.append(editor);
     insertCardInRowOrder(draft, Number(pair.dataset.row));
     draft.scrollIntoView({block: 'nearest'});
 
@@ -1115,7 +1134,7 @@ button{font:inherit}
       const author = reviewerName();
       if (!author) return;
       draft.remove();
-      selectMemoCard(createMemo(pair, resolved, author, text));
+      selectMemoCard(createMemo(pair, resolved, author, text, quote));
     };
     save.addEventListener('click', commit);
     cancel.addEventListener('click', () => draft.remove());
@@ -1132,8 +1151,9 @@ button{font:inherit}
 
   addButton?.addEventListener('click', () => {
     if (!hoveredPair) return;
+    const quote = selectedPhrase(sideElement(hoveredPair, hoveredSide));
     showMemoPanel(true);
-    openMemoDraft(hoveredPair, hoveredSide);
+    openMemoDraft(hoveredPair, hoveredSide, quote);
   });
 
   /**

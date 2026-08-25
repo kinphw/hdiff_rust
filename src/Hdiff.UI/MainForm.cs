@@ -379,23 +379,44 @@ internal sealed class MainForm : Form
         if (_currentDiff is null || target.RowIndex < 0 || target.RowIndex >= _currentDiff.Rows.Count) return;
         var row = _currentDiff.Rows[target.RowIndex];
         var side = DiffMemoAnchor.ResolveSide(row, target.Side);
+        // A highlighted phrase becomes the quote so the card says which words
+        // the memo is about. Without one there is no quote at all: repeating the
+        // paragraph only crowded out the memo text.
+        var phrase = target.SelectedText;
         ShowMemoPanel(true);
         _memoPanel.Author = _memoAuthor;
-        _memoPanel.BeginAdd(new DiffMemoDraftTarget(target.RowIndex, row.Kind, side, DescribeRowPosition(row),
-            (side == DiffMemoSide.Old ? row.OldText : row.NewText) ?? string.Empty));
+        _memoPanel.BeginAdd(new DiffMemoDraftTarget(
+            target.RowIndex,
+            row.Kind,
+            side,
+            DescribeRowPosition(row),
+            phrase,
+            phrase));
         _diffView.PinnedMemoTarget = new SideBySideDiffView.DiffMemoTarget(target.RowIndex, side);
     }
 
     private void SaveMemo(DiffMemoSubmission item)
     {
         if (_currentDiff is null) return;
-        _memoAuthor = item.Author; _memoPanel.Author = _memoAuthor; string id;
+        _memoAuthor = item.Author;
+        _memoPanel.Author = _memoAuthor;
+        string id;
         if (item.MemoId is { } memoId)
         {
             if (!_memoStore.Update(memoId, item.Author, item.Text, DateTimeOffset.Now)) return;
             id = memoId;
         }
-        else { id = _memoStore.Add(_currentDiff, item.Target.RowIndex, item.Target.Side, item.Author, item.Text, DateTimeOffset.Now).Id; }
+        else
+        {
+            id = _memoStore.Add(
+                _currentDiff,
+                item.Target.RowIndex,
+                item.Target.Side,
+                item.Author,
+                item.Text,
+                DateTimeOffset.Now,
+                item.Target.SelectedText).Id;
+        }
         MarkMemosDirty();
         _memoPanel.SelectMemo(id);
         NavigateToMemo(id);

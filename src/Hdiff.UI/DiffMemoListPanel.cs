@@ -4,9 +4,15 @@ using Hdiff.Core.Review;
 namespace Hdiff.UI;
 
 internal sealed record DiffMemoRow(string Id, int Number, DiffChangeKind Kind, DiffMemoSide Side, int RowIndex,
-    string Position, string Quote, string Text, string Author, string When, bool Orphaned,
+    string Position, string? Quote, string Text, string Author, string When, bool Orphaned,
     IReadOnlyList<DiffMemoReply> Replies);
-internal sealed record DiffMemoDraftTarget(int RowIndex, DiffChangeKind Kind, DiffMemoSide Side, string Position, string Quote);
+internal sealed record DiffMemoDraftTarget(
+    int RowIndex,
+    DiffChangeKind Kind,
+    DiffMemoSide Side,
+    string Position,
+    string? Quote,
+    string? SelectedText = null);
 internal sealed record DiffMemoSubmission(string? MemoId, DiffMemoDraftTarget Target, string Author, string Text);
 internal sealed record DiffMemoReplySubmission(string MemoId, string Author, string Text);
 internal sealed record DiffMemoReplyKey(string MemoId, string ReplyId);
@@ -166,10 +172,20 @@ internal sealed class DiffMemoListPanel : Panel
             Text = memo.Orphaned ? "위치 없음" : memo.Position
         });
         Add(card, head);
-        var quote = Wrap(Shorten(Flatten(memo.Quote), 160), _theme.MemoSurfaceBack, _theme.MutedText, 8.5f, 260);
-        quote.Margin = new Padding(0, 7, 0, 0); quote.Padding = new Padding(7, 3, 0, 3);
-        quote.Paint += (_, e) => { using var p = new Pen(_theme.Border, 2); e.Graphics.DrawLine(p, 1, 1, 1, quote.Height - 2); };
-        Add(card, quote);
+        // Only a highlighted phrase is quoted; without one the memo text starts
+        // right away instead of being pushed down by the whole paragraph.
+        if (memo.Quote is { } quoted)
+        {
+            var quote = Wrap(Shorten(Flatten(quoted), 160), _theme.MemoSurfaceBack, _theme.MutedText, 8.5f, 260);
+            quote.Margin = new Padding(0, 7, 0, 0);
+            quote.Padding = new Padding(7, 3, 0, 3);
+            quote.Paint += (_, e) =>
+            {
+                using var accent = new Pen(_theme.MemoAccent, 2);
+                e.Graphics.DrawLine(accent, 1, 1, 1, quote.Height - 2);
+            };
+            Add(card, quote);
+        }
         var body = Wrap(memo.Text, _theme.MemoSurfaceBack, _theme.Text, 9f, 260); body.Margin = new Padding(0, 7, 0, 0); Add(card, body);
         var foot = new TableLayoutPanel { AutoSize = true, BackColor = _theme.MemoSurfaceBack, ColumnCount = 2, Dock = DockStyle.Fill, Margin = new Padding(0, 7, 0, 0) };
         foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -240,12 +256,31 @@ internal sealed class DiffMemoListPanel : Panel
         Add(shell, EditorButtons(Commit)); WireKeys(area, Commit); InsertEditor(shell, Math.Max(0, IndexOf(memoId) + 1)); area.Focus();
     }
 
-    private TableLayoutPanel EditorShell(string title, string quote)
+    private TableLayoutPanel EditorShell(string title, string? quote)
     {
-        var shell = Table(_theme.SurfaceBack, new Padding(9)); shell.Width = CardWidth(); shell.Margin = new Padding(0, 0, 0, 8);
-        shell.Paint += (_, e) => { using var p = new Pen(_theme.PrimaryActionBack); e.Graphics.DrawRectangle(p, 0, 0, shell.Width - 1, shell.Height - 1); };
-        Add(shell, new Label { AutoSize = true, BackColor = _theme.SurfaceBack, ForeColor = _theme.Text, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold), Text = title });
-        var q = Wrap(Shorten(Flatten(quote), 160), _theme.SurfaceBack, _theme.MutedText, 8f, 255); q.Margin = new Padding(0, 5, 0, 5); Add(shell, q); return shell;
+        var shell = Table(_theme.SurfaceBack, new Padding(9));
+        shell.Width = CardWidth();
+        shell.Margin = new Padding(0, 0, 0, 8);
+        shell.Paint += (_, e) =>
+        {
+            using var border = new Pen(_theme.PrimaryActionBack);
+            e.Graphics.DrawRectangle(border, 0, 0, shell.Width - 1, shell.Height - 1);
+        };
+        Add(shell, new Label
+        {
+            AutoSize = true,
+            BackColor = _theme.SurfaceBack,
+            ForeColor = _theme.Text,
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+            Text = title,
+        });
+        if (quote is { } quoted)
+        {
+            var label = Wrap(Shorten(Flatten(quoted), 160), _theme.SurfaceBack, _theme.MutedText, 8f, 255);
+            label.Margin = new Padding(0, 5, 0, 5);
+            Add(shell, label);
+        }
+        return shell;
     }
 
     private TextBox TextArea(string text, string placeholder) => new()

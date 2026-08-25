@@ -261,8 +261,32 @@ Expect(memoStore.CountByRowSide()[modifiedRowIndex] == (1, 1),
 Expect(memoStore.ForRow(insertedRowIndex).Single().Anchor.Side == DiffMemoSide.New,
     "한쪽에만 있는 행의 메모는 빈 칸이 아니라 글이 있는 쪽에 붙어야 합니다.");
 var oldSideMemo = memoStore.ForRow(modifiedRowIndex).Single(memo => memo.Anchor.Side == DiffMemoSide.Old);
-Expect(oldSideMemo.Anchor.Quote == exportDiff.Rows[modifiedRowIndex].OldText,
-    "변경 전에 단 메모는 변경 전 문단을 인용해야 합니다.");
+Expect(oldSideMemo.Anchor.Paragraph == exportDiff.Rows[modifiedRowIndex].OldText,
+    "변경 전에 단 메모는 변경 전 문단에 붙어야 합니다.");
+Expect(oldSideMemo.Anchor.Quote is null && !oldSideMemo.Anchor.HasSelectedText,
+    "문구를 선택하지 않고 단 메모는 인용을 남기지 않아야 합니다.");
+
+// 문구를 선택하고 단 메모: 카드가 문단 전체 대신 그 문구만 인용합니다.
+var phraseRowIndex = exportDiff.Rows
+    .Select((row, index) => (row, index))
+    .First(x => x.row.Kind == DiffChangeKind.Modified && (x.row.NewText?.Length ?? 0) > 20).index;
+var phraseSource = exportDiff.Rows[phraseRowIndex].NewText!;
+var phrase = phraseSource.Substring(3, 8);
+var phraseMemo = memoStore.Add(exportDiff, phraseRowIndex, DiffMemoSide.New, "김검토",
+    "이 문구가 규정 용어와 맞지 않습니다.", memoTime.AddMinutes(9), phrase);
+// 드래그는 대개 앞뒤 공백을 물고 끝나므로 인용은 다듬어 저장합니다.
+Expect(phraseMemo.Anchor.Quote == phrase.Trim() && phraseMemo.Anchor.HasSelectedText,
+    "선택한 문구를 앞뒤 공백만 다듬어 그대로 인용해야 합니다.");
+Expect(phraseMemo.Anchor.Paragraph == phraseSource,
+    "문구를 인용해도 메모는 여전히 그 문단에 붙어 있어야 합니다.");
+Expect(memoStore.Add(exportDiff, phraseRowIndex, DiffMemoSide.New, "김검토", "문단 전체", memoTime.AddMinutes(10), phraseSource)
+        .Anchor.Quote is null,
+    "문단 전체를 선택한 것은 인용으로 남길 가치가 없습니다.");
+Expect(memoStore.Add(exportDiff, phraseRowIndex, DiffMemoSide.New, "김검토", "없는 문구", memoTime.AddMinutes(11), "이 문서에 없는 문구")
+        .Anchor.Quote is null,
+    "문단에 없는 문구는 인용으로 받아들이면 안 됩니다.");
+memoStore.Remove(memoStore.Memos.Last(memo => memo.Text == "없는 문구").Id);
+memoStore.Remove(memoStore.Memos.Last(memo => memo.Text == "문단 전체").Id);
 var appReply = memoStore.AddReply(oldSideMemo.Id, "이회신", "본체에서 추가한 회신입니다.", memoTime.AddMinutes(7));
 Expect(memoStore.Find(oldSideMemo.Id)!.Replies.Single() == appReply, "본체 회신은 코어 데이터로 보존되어야 합니다.");
 Expect(memoStore.RemoveReply(oldSideMemo.Id, appReply.Id), "회신을 삭제할 수 있어야 합니다.");
@@ -308,6 +332,13 @@ Expect(exportedHtmlWithMemos.Contains("id=\"memo-panel\"", StringComparison.Ordi
 Expect(exportedHtmlWithMemos.Contains("&lt;확인&gt;", StringComparison.Ordinal)
     && !exportedHtmlWithMemos.Contains("<확인>", StringComparison.Ordinal),
     "메모 본문도 실행 가능한 HTML이 되지 않도록 이스케이프해야 합니다.");
+Expect(exportedHtmlWithMemos.Contains($"<blockquote class=\"memo-quote\">{phrase.Trim()}</blockquote>", StringComparison.Ordinal),
+    "공유 HTML도 선택한 문구만 인용해야 합니다.");
+Expect(System.Text.RegularExpressions.Regex.Matches(exportedHtmlWithMemos, "<blockquote class=\"memo-quote\">").Count == 1,
+    "문구를 선택하지 않은 메모에는 인용 블록을 넣지 않아야 합니다.");
+Expect(exportedHtmlWithMemos.Contains("function selectedPhrase(", StringComparison.Ordinal)
+    && exportedHtmlWithMemos.Contains("if (quote) card.append(", StringComparison.Ordinal),
+    "받는 사람도 문구를 선택한 채 메모를 달면 그 문구만 인용해야 합니다.");
 Expect(exportedHtmlWithMemos.Contains("calc((100vw - var(--memo-w))/2 + 2px)", StringComparison.Ordinal)
     && !exportedHtmlWithMemos.Contains("left:calc(50vw + 2px)", StringComparison.Ordinal),
     "메모 패널이 차지한 폭만큼 좌우 열 기준을 줄여야 고정 줄번호가 어긋나지 않습니다.");
@@ -384,10 +415,10 @@ var numbersBySide = sharedNumbering
     .GroupBy(item => (item.Memo.Anchor.RowIndex, item.Memo.Anchor.Side))
     .ToDictionary(group => group.Key, group => group.Select(item => item.Number).ToArray());
 Expect(numbersBySide.TryGetValue((modifiedRowIndex, DiffMemoSide.Old), out var oldSideNumbers)
-    && oldSideNumbers.Length == 1
+    && oldSideNumbers.Length > 0
     && numbersBySide.TryGetValue((modifiedRowIndex, DiffMemoSide.New), out var newSideNumbers)
-    && newSideNumbers.Length == 1
-    && oldSideNumbers[0] != newSideNumbers[0],
+    && newSideNumbers.Length > 0
+    && !oldSideNumbers.Intersect(newSideNumbers).Any(),
     "같은 행이라도 변경 전·후 메모는 서로 다른 번호로 각 칸에 표시해야 합니다.");
 
 var exportedMemoHtmlPath = Path.Combine(fixtureDir, "standalone-diff-preview-memos.html");
