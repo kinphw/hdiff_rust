@@ -889,8 +889,16 @@ internal sealed class SideBySideDiffView : UserControl
             base.OnMouseDown(e);
             if (e.Button == MouseButtons.Left && TryGetMemoAdd(e.Location, out var addTarget))
             {
+                // Read the selection before focusing clears it: dragging a
+                // phrase and then pressing + is the most natural way to ask for
+                // a memo on those words.
+                var (phrase, phraseStart) = GetSelectedPhrase(addTarget.RowIndex, addTarget.Side);
                 Focus();
-                MemoAddRequested?.Invoke(this, addTarget);
+                MemoAddRequested?.Invoke(this, addTarget with
+                {
+                    SelectedText = phrase,
+                    SelectionStart = phraseStart,
+                });
                 return;
             }
             if (e.Button == MouseButtons.Left && TryGetMemoFlag(e.Location, out var memoTarget))
